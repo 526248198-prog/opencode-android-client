@@ -1,0 +1,14 @@
+# 构建产物（脚本会重建）
+app/build/
+app/OpenCodeClient.apk
+*.apk
+
+# 签名（公开仓库不能带 keystore：别人能拿它签出可覆盖安装的同包名 APK）
+*.keystore
+*.jks
+
+# 本机密码与临时文件
+server_password.txt
+*.log
+.DS_Store
+*.idsig
