@@ -32,6 +32,8 @@ public class BrowserActivity extends Activity {
     private android.widget.TextView bridgeStatus;
     /** 进程级常驻：关页不断桥（0.18.2），随进程死或列表页手动停。 */
     static BridgeServer live;
+    /** 0.22.0：本页创建时的调色板代号；onResume 发现变了就重建，避免半深半浅。 */
+    private int themeGen;
 
     static void stopLive() {
         try {
@@ -81,17 +83,20 @@ public class BrowserActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         CrashLogger.install(this); // 进程级崩溃日志（0.21.0）
+        Palette.init(this);        // 0.22.0 深色模式
+        Palette.apply(this);
+        themeGen = Palette.gen();
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.parseColor("#F5F5F5"));
+        root.setBackgroundColor(Palette.pageBg());
 
         // 顶栏：返回 + 地址栏 + 前往
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setPadding(dp(8), dp(12), dp(8), dp(8));
-        top.setBackgroundColor(Color.parseColor("#FFFFFF"));
+        top.setBackgroundColor(Palette.surface());
         root.addView(top);
 
         Button back = new Button(this);
@@ -129,7 +134,7 @@ public class BrowserActivity extends Activity {
         bridgeStatus = new android.widget.TextView(this);
         bridgeStatus.setText("桥：启动中…");
         bridgeStatus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        bridgeStatus.setTextColor(Color.parseColor("#888888"));
+        bridgeStatus.setTextColor(Palette.textMuted());
         bridgeStatus.setPadding(dp(12), dp(2), dp(12), dp(2));
         root.addView(bridgeStatus);
 
@@ -140,6 +145,7 @@ public class BrowserActivity extends Activity {
         root.addView(web, wLp);
         web.getSettings().setJavaScriptEnabled(true);
         web.getSettings().setDomStorageEnabled(true);
+        applyWebDark();
         web.setWebViewClient(new StayClient());
 
         // 0.18.0 读桥：随本页生死，AI 用 curl 调 127.0.0.1:4098
@@ -162,7 +168,7 @@ public class BrowserActivity extends Activity {
         bottom.setOrientation(LinearLayout.HORIZONTAL);
         bottom.setGravity(Gravity.CENTER_VERTICAL);
         bottom.setPadding(dp(8), dp(8), dp(8), dp(12));
-        bottom.setBackgroundColor(Color.parseColor("#FFFFFF"));
+        bottom.setBackgroundColor(Palette.surface());
         root.addView(bottom);
 
         Button backBtn = new Button(this);
@@ -213,6 +219,34 @@ public class BrowserActivity extends Activity {
 
         String start = getIntent().getStringExtra("url");
         go(start != null ? start : "https://github.com");
+    }
+
+    /** 0.22.0：网页跟随深色（尽力而为）。API 33+ 算法暗化，29–32 用 force dark。 */
+    private void applyWebDark() {
+        try {
+            if (web == null) return;
+            android.webkit.WebSettings s = web.getSettings();
+            if (android.os.Build.VERSION.SDK_INT >= 33) {
+                s.setAlgorithmicDarkeningAllowed(Palette.isDark());
+            } else if (android.os.Build.VERSION.SDK_INT >= 29) {
+                s.setForceDark(Palette.isDark()
+                        ? android.webkit.WebSettings.FORCE_DARK_ON
+                        : android.webkit.WebSettings.FORCE_DARK_OFF);
+            }
+        } catch (Exception ignored) {
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // 列表页切了配色：本页是 singleTask 常驻，不重建就会「黑底配浅色控件」。
+        // recreate 会重建 WebView，但 cookie/登录态在磁盘上，不掉登录。
+        if (themeGen != Palette.gen()) {
+            recreate();
+            return;
+        }
+        applyWebDark();
     }
 
     @Override

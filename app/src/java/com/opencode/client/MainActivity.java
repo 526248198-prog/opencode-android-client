@@ -187,6 +187,7 @@ public class MainActivity extends Activity {
     private Button refreshBtn;
     private Button newBtn;
     private Button stopBridgeBtn;
+    private Button themeBtn; // 0.22.0 配色切换
     private Button crashBtn; // 崩溃日志入口（0.21.0），有日志才显示
     private ListView listView;
     private ArrayAdapter<String> adapter;
@@ -275,23 +276,45 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         CrashLogger.install(this); // 进程级崩溃日志（0.21.0）：闪退写 /sdcard/Download/opencode/crash-*.txt
+        Palette.init(this);        // 0.22.0 深色模式：先定主题再建视图
+        Palette.apply(this);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(16);
         root.setPadding(pad, dp(24), pad, pad);
-        root.setBackgroundColor(Color.parseColor("#F5F5F5"));
+        root.setBackgroundColor(Palette.pageBg());
+
+        // 标题行：左标题，右配色切换（跟随系统 / 浅色 / 深色，点一下换一档）
+        LinearLayout titleRow = new LinearLayout(this);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        root.addView(titleRow);
 
         TextView title = new TextView(this);
         title.setText("OpenCode 会话");
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
-        title.setTextColor(Color.parseColor("#222222"));
-        root.addView(title);
+        title.setTextColor(Palette.textPrimary());
+        titleRow.addView(title, new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+
+        themeBtn = new Button(this);
+        themeBtn.setText(Palette.currentLabel());
+        themeBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        themeBtn.setMinHeight(dp(44));
+        themeBtn.setMinimumWidth(dp(56));
+        themeBtn.setPadding(dp(6), 0, dp(6), 0);
+        titleRow.addView(themeBtn);
+        themeBtn.setOnClickListener(v -> {
+            Palette.cycle(this);
+            Toast.makeText(this, "配色：" + Palette.currentLabel(), Toast.LENGTH_SHORT).show();
+            recreate(); // 已建的视图颜色改不动，重建最省事（主题/对话框一起换）
+        });
 
         statusView = new TextView(this);
         statusView.setText("正在连接服务器…");
         statusView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        statusView.setTextColor(Color.parseColor("#666666"));
+        statusView.setTextColor(Palette.textSecondary());
         LinearLayout.LayoutParams stLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         stLp.topMargin = dp(4);
@@ -327,7 +350,7 @@ public class MainActivity extends Activity {
         lLp.topMargin = dp(12);
         root.addView(listView, lLp);
 
-        adapter = new ArrayAdapter<>(this, android.R.layout.simple_list_item_1, titles);
+        adapter = new RowAdapter(this, titles);
         listView.setAdapter(adapter);
         listView.setOnItemClickListener((parent, view, position, id) -> {
             String sid = ids.get(position);
@@ -356,7 +379,7 @@ public class MainActivity extends Activity {
         TextView cmdView = new TextView(this);
         cmdView.setText(SERVE_CMD);
         cmdView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        cmdView.setTextColor(Color.parseColor("#999999"));
+        cmdView.setTextColor(Palette.textMuted());
         foot.addView(cmdView);
 
         LinearLayout footRow = new LinearLayout(this);
@@ -440,7 +463,7 @@ public class MainActivity extends Activity {
         TextView verTv = new TextView(this);
         verTv.setText("v" + appVersionName());
         verTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        verTv.setTextColor(Color.parseColor("#999999"));
+        verTv.setTextColor(Palette.textMuted());
         verTv.setPadding(dp(6), 0, dp(4), 0);
         footRow2.addView(verTv, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
@@ -924,5 +947,24 @@ public class MainActivity extends Activity {
         while ((line = r.readLine()) != null) sb.append(line);
         r.close();
         return sb.toString();
+    }
+
+    /**
+     * 0.22.0 深色：simple_list_item_1 的正文颜色取自主题，深色下必须显式给色，
+     * 否则黑字落在深底上等于看不见。必须 static（D8 8.2.2-dev 遇非静态内部类会崩，见 DEVELOPER.md）。
+     */
+    static class RowAdapter extends ArrayAdapter<String> {
+        RowAdapter(android.content.Context ctx, java.util.List<String> items) {
+            super(ctx, android.R.layout.simple_list_item_1, items);
+        }
+
+        @Override
+        public android.view.View getView(int position, android.view.View convertView,
+                                         android.view.ViewGroup parent) {
+            TextView tv = (TextView) super.getView(position, convertView, parent);
+            tv.setTextColor(Palette.textPrimary());
+            tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+            return tv;
+        }
     }
 }

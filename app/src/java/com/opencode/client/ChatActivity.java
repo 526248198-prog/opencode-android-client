@@ -197,6 +197,8 @@ public class ChatActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         CrashLogger.install(this); // 进程级崩溃日志（0.21.0）：闪退写 /sdcard/Download/opencode/crash-*.txt
+        Palette.init(this);        // 0.22.0 深色模式：先定主题再建视图
+        Palette.apply(this);
         // keyboard fix: shrink layout instead of covering input
         getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE);
         sessionID = getIntent().getStringExtra("sessionID");
@@ -209,14 +211,14 @@ public class ChatActivity extends Activity {
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(Color.parseColor("#F5F5F5"));
+        root.setBackgroundColor(Palette.pageBg());
 
         // top bar
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
         top.setPadding(dp(8), dp(12), dp(8), dp(8));
-        top.setBackgroundColor(Color.parseColor("#FFFFFF"));
+        top.setBackgroundColor(Palette.surface());
 
         Button back = new Button(this);
         back.setText("‹ 返回");
@@ -234,7 +236,7 @@ public class ChatActivity extends Activity {
         baseTitle = title != null ? title : sessionID;
         t.setText(baseTitle);
         t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
-        t.setTextColor(Color.parseColor("#222222"));
+        t.setTextColor(Palette.textPrimary());
         t.setSingleLine(true);
         titleBox.addView(t);
         titleView = t;
@@ -242,7 +244,7 @@ public class ChatActivity extends Activity {
         statusView = new TextView(this);
         statusView.setText("空闲");
         statusView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        statusView.setTextColor(Color.parseColor("#888888"));
+        statusView.setTextColor(Palette.textMuted());
         titleBox.addView(statusView);
         // stop + attach live top-right (bottom bar keeps [input][send] only)
         plusBtn = new Button(this);
@@ -293,13 +295,13 @@ public class ChatActivity extends Activity {
         modelRow.setOrientation(LinearLayout.HORIZONTAL);
         modelRow.setGravity(Gravity.CENTER_VERTICAL);
         modelRow.setPadding(dp(8), dp(4), dp(8), dp(4));
-        modelRow.setBackgroundColor(Color.parseColor("#EEEEEE"));
+        modelRow.setBackgroundColor(Palette.rowBg());
         root.addView(modelRow);
 
         TextView modelLabel = new TextView(this);
         modelLabel.setText("模型:");
         modelLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        modelLabel.setTextColor(Color.parseColor("#666666"));
+        modelLabel.setTextColor(Palette.textSecondary());
         modelRow.addView(modelLabel);
 
         modelSpinner = new Spinner(this);
@@ -318,13 +320,13 @@ public class ChatActivity extends Activity {
         agentRow.setOrientation(LinearLayout.HORIZONTAL);
         agentRow.setGravity(Gravity.CENTER_VERTICAL);
         agentRow.setPadding(dp(8), dp(4), dp(8), dp(4));
-        agentRow.setBackgroundColor(Color.parseColor("#EEEEEE"));
+        agentRow.setBackgroundColor(Palette.rowBg());
         root.addView(agentRow);
 
         TextView agentLabel = new TextView(this);
         agentLabel.setText("Agent:");
         agentLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        agentLabel.setTextColor(Color.parseColor("#666666"));
+        agentLabel.setTextColor(Palette.textSecondary());
         agentRow.addView(agentLabel);
 
         agentSpinner = new Spinner(this);
@@ -339,7 +341,7 @@ public class ChatActivity extends Activity {
         TextView variantLabel = new TextView(this);
         variantLabel.setText("思考:");
         variantLabel.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        variantLabel.setTextColor(Color.parseColor("#666666"));
+        variantLabel.setTextColor(Palette.textSecondary());
         agentRow.addView(variantLabel);
 
         variantSpinner = new Spinner(this);
@@ -357,7 +359,7 @@ public class ChatActivity extends Activity {
         diffRow.setOrientation(LinearLayout.HORIZONTAL);
         diffRow.setGravity(Gravity.CENTER_VERTICAL);
         diffRow.setPadding(dp(8), dp(4), dp(8), dp(4));
-        diffRow.setBackgroundColor(Color.parseColor("#EEEEEE"));
+        diffRow.setBackgroundColor(Palette.rowBg());
         root.addView(diffRow);
 
         diffBtn = new Button(this);
@@ -374,13 +376,13 @@ public class ChatActivity extends Activity {
         permBox = new LinearLayout(this);
         permBox.setOrientation(LinearLayout.VERTICAL);
         permBox.setPadding(dp(8), dp(8), dp(8), dp(8));
-        permBox.setBackgroundColor(Color.parseColor("#FFF3E0"));
+        permBox.setBackgroundColor(Palette.permBg());
         permBox.setVisibility(LinearLayout.GONE);
         root.addView(permBox);
 
         permText = new TextView(this);
         permText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        permText.setTextColor(Color.parseColor("#5D4037"));
+        permText.setTextColor(Palette.permText());
         permBox.addView(permText);
 
         LinearLayout permRow = new LinearLayout(this);
@@ -414,7 +416,7 @@ public class ChatActivity extends Activity {
         denyBtn.setText("拒绝");
         denyBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         denyBtn.setMinHeight(dp(48));
-        denyBtn.setTextColor(Color.parseColor("#C62828"));
+        denyBtn.setTextColor(Palette.error());
         LinearLayout.LayoutParams pdLp = new LinearLayout.LayoutParams(0, dp(48), 1f);
         pdLp.leftMargin = dp(4);
         permRow.addView(denyBtn, pdLp);
@@ -428,7 +430,7 @@ public class ChatActivity extends Activity {
         qBox = new LinearLayout(this);
         qBox.setOrientation(LinearLayout.VERTICAL);
         qBox.setPadding(dp(8), dp(8), dp(8), dp(8));
-        qBox.setBackgroundColor(Color.parseColor("#E3F2FD"));
+        qBox.setBackgroundColor(Palette.questionBg());
         qBox.setVisibility(LinearLayout.GONE);
         root.addView(qBox);
 
@@ -439,7 +441,7 @@ public class ChatActivity extends Activity {
 
         qTitle = new TextView(this);
         qTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        qTitle.setTextColor(Color.parseColor("#0D47A1"));
+        qTitle.setTextColor(Palette.questionText());
         LinearLayout.LayoutParams qTitleLp = new LinearLayout.LayoutParams(
                 0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         qTitleLp.rightMargin = dp(6);
@@ -484,7 +486,7 @@ public class ChatActivity extends Activity {
         qSkip.setText("跳过");
         qSkip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
         qSkip.setMinHeight(dp(48));
-        qSkip.setTextColor(Color.parseColor("#C62828"));
+        qSkip.setTextColor(Palette.error());
         LinearLayout.LayoutParams qkLp = new LinearLayout.LayoutParams(0, dp(48), 1f);
         qkLp.leftMargin = dp(4);
         qRow.addView(qSkip, qkLp);
@@ -511,10 +513,10 @@ public class ChatActivity extends Activity {
         jumpBtn = new TextView(this);
         jumpBtn.setText("⬇ 回到底部");
         jumpBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        jumpBtn.setTextColor(Color.WHITE);
+        jumpBtn.setTextColor(Palette.onAccent());
         android.graphics.drawable.GradientDrawable jbBg =
                 new android.graphics.drawable.GradientDrawable();
-        jbBg.setColor(Color.parseColor("#99000000"));
+        jbBg.setColor(Palette.scrim());
         jbBg.setCornerRadius(dp(18));
         jumpBtn.setBackground(jbBg);
         jumpBtn.setPadding(dp(14), dp(8), dp(14), dp(8));
@@ -541,13 +543,13 @@ public class ChatActivity extends Activity {
         statusBanner.setOrientation(LinearLayout.HORIZONTAL);
         statusBanner.setGravity(Gravity.CENTER_VERTICAL);
         statusBanner.setPadding(dp(12), dp(6), dp(12), dp(6));
-        statusBanner.setBackgroundColor(Color.parseColor("#E8F5E9"));
+        statusBanner.setBackgroundColor(Palette.okBg());
         statusBanner.setVisibility(LinearLayout.GONE);
         root.addView(statusBanner);
 
         statusText = new TextView(this);
         statusText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-        statusText.setTextColor(Color.parseColor("#2E7D32"));
+        statusText.setTextColor(Palette.okText());
         statusBanner.addView(statusText);
 
         // bottom input bar (fixed)
@@ -555,7 +557,7 @@ public class ChatActivity extends Activity {
         bottom.setOrientation(LinearLayout.HORIZONTAL);
         bottom.setGravity(Gravity.CENTER_VERTICAL);
         bottom.setPadding(dp(8), dp(8), dp(8), dp(12));
-        bottom.setBackgroundColor(Color.parseColor("#FFFFFF"));
+        bottom.setBackgroundColor(Palette.surface());
         root.addView(bottom);
 
         input = new EditText(this);
@@ -1481,7 +1483,7 @@ public class ChatActivity extends Activity {
         TextView tv = new TextView(this);
         tv.setText(shown);
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        tv.setTextColor(Color.parseColor("#222222"));
+        tv.setTextColor(Palette.textPrimary());
         tv.setPadding(dp(12), dp(12), dp(12), dp(12));
         tv.setTextIsSelectable(true);
         final String full = patch;
@@ -1761,11 +1763,11 @@ public class ChatActivity extends Activity {
                 LinearLayout bubble = new LinearLayout(this);
                 bubble.setOrientation(LinearLayout.VERTICAL);
                 bubble.setPadding(dp(12), dp(10), dp(12), dp(10));
-                bubble.setBackgroundColor(Color.parseColor("#FFFFFF"));
+                bubble.setBackgroundColor(Palette.surface());
                 TextView tv = new TextView(this);
                 tv.setText(interrupted ? "⏹️ 已停止" : "❌ 运行未成功：" + outcome);
                 tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-                tv.setTextColor(Color.parseColor(interrupted ? "#8D6E63" : "#C62828"));
+                tv.setTextColor(interrupted ? Palette.interrupted() : Palette.error());
                 bubble.addView(tv);
                 msgBox.addView(bubble);
                 msgBubbles.put(mid, bubble);
@@ -1788,12 +1790,12 @@ public class ChatActivity extends Activity {
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         bLp.topMargin = dp(8);
         bubble.setLayoutParams(bLp);
-        bubble.setBackgroundColor(user ? Color.parseColor("#DCF8C6") : Color.parseColor("#FFFFFF"));
+        bubble.setBackgroundColor(user ? Palette.userBubble() : Palette.surface());
 
         TextView roleTv = new TextView(this);
         roleTv.setText(user ? "我" : "AI");
         roleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        roleTv.setTextColor(Color.parseColor("#999999"));
+        roleTv.setTextColor(Palette.textMuted());
         bubble.addView(roleTv);
         if (!mid.isEmpty()) msgBubbles.put(mid, bubble);
 
@@ -1816,11 +1818,11 @@ public class ChatActivity extends Activity {
                 if (!errMsg.isEmpty()) {
                     ph.setText("❌ 发送失败：" + errMsg);
                     ph.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-                    ph.setTextColor(Color.parseColor("#C62828"));
+                    ph.setTextColor(Palette.error());
                 } else {
                     ph.setText("⋯ AI 正在准备回复 ⋯");
                     ph.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-                    ph.setTextColor(Color.parseColor("#AAAAAA"));
+                    ph.setTextColor(Palette.textMuted());
                 }
                 bubble.addView(ph);
             }
@@ -1841,7 +1843,7 @@ public class ChatActivity extends Activity {
         String mid = p.optString("messageID", "");
         TextView tv = new TextView(this);
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        tv.setTextColor(Color.parseColor("#222222"));
+        tv.setTextColor(Palette.textPrimary());
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         lp.topMargin = dp(4);
@@ -1864,8 +1866,8 @@ public class ChatActivity extends Activity {
                             + "（约" + text.length() + "字，已折叠，长按复制看全文）";
                     tv.setText(ph);
                     tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-                    tv.setTextColor(Color.parseColor("#888888"));
-                    tv.setBackgroundColor(Color.parseColor("#F0F0F0"));
+                    tv.setTextColor(Palette.textMuted());
+                    tv.setBackgroundColor(Palette.codeBg());
                     final String full = text;
                     tv.setOnLongClickListener(v -> {
                         copyText(full);
@@ -1902,8 +1904,8 @@ public class ChatActivity extends Activity {
         } else if ("tool".equals(type)) {
             tv.setText(toolLine(p));
             tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-            tv.setTextColor(Color.parseColor("#555555"));
-            tv.setBackgroundColor(Color.parseColor("#F0F0F0"));
+            tv.setTextColor(Palette.textSecondary());
+            tv.setBackgroundColor(Palette.codeBg());
             if (!pid.isEmpty()) partViews.put(pid, tv);
         } else if ("file".equals(type)) {
             // file placeholder: NEVER dump url content into the bubble.
@@ -1944,8 +1946,8 @@ public class ChatActivity extends Activity {
             if (label.length() > 80) label = label.substring(0, 80) + "…";
             tv.setText(label);
             tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-            tv.setTextColor(Color.parseColor("#888888"));
-            tv.setBackgroundColor(Color.parseColor("#F0F0F0"));
+            tv.setTextColor(Palette.textMuted());
+            tv.setBackgroundColor(Palette.codeBg());
         } else {
             return null; // snapshot/patch/step 等 MVP 忽略
         }
@@ -2755,20 +2757,20 @@ public class ChatActivity extends Activity {
                     LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
             qcLp.topMargin = dp(8);
             qc.setLayoutParams(qcLp);
-            qc.setBackgroundColor(Color.parseColor("#FFFFFF"));
+            qc.setBackgroundColor(Palette.surface());
             qc.setPadding(dp(8), dp(8), dp(8), dp(8));
             qList.addView(qc);
 
             TextView hTv = new TextView(this);
             hTv.setText("第" + (qIdx + 1) + "题 · " + header + (multiple ? "（可多选）" : "（单选）"));
             hTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-            hTv.setTextColor(Color.parseColor("#666666"));
+            hTv.setTextColor(Palette.textSecondary());
             qc.addView(hTv);
 
             TextView pTv = new TextView(this);
             pTv.setText(prompt);
             pTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
-            pTv.setTextColor(Color.parseColor("#212121"));
+            pTv.setTextColor(Palette.textPrimary());
             qc.addView(pTv);
             makeCopyable(pTv);
 
@@ -2841,11 +2843,11 @@ public class ChatActivity extends Activity {
             Object tag = b.getTag();
             String label = tag != null ? tag.toString() : "";
             if (sel.contains(label)) {
-                b.setBackgroundColor(Color.parseColor("#1976D2"));
-                b.setTextColor(Color.parseColor("#FFFFFF"));
+                b.setBackgroundColor(Palette.accent());
+                b.setTextColor(Palette.onAccent());
             } else {
-                b.setBackgroundColor(Color.parseColor("#FFFFFF"));
-                b.setTextColor(Color.parseColor("#212121"));
+                b.setBackgroundColor(Palette.surface());
+                b.setTextColor(Palette.textPrimary());
             }
         }
     }
@@ -3347,7 +3349,7 @@ public class ChatActivity extends Activity {
         LinearLayout bubble = new LinearLayout(this);
         bubble.setOrientation(LinearLayout.VERTICAL);
         bubble.setPadding(dp(12), dp(10), dp(12), dp(10));
-        bubble.setBackgroundColor(Color.parseColor("#FFFFFF"));
+        bubble.setBackgroundColor(Palette.surface());
         LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
         bLp.topMargin = dp(8);
@@ -3355,13 +3357,13 @@ public class ChatActivity extends Activity {
         TextView roleTv = new TextView(this);
         roleTv.setText("AI");
         roleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        roleTv.setTextColor(Color.parseColor("#999999"));
+        roleTv.setTextColor(Palette.textMuted());
         bubble.addView(roleTv);
         TextView ph = new TextView(this);
         ph.setTag("streamingPlaceholder");
         ph.setText("… 正在思考或准备中，详情见上方状态栏 …");
         ph.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        ph.setTextColor(Color.parseColor("#AAAAAA"));
+        ph.setTextColor(Palette.textMuted());
         bubble.addView(ph);
         msgBox.addView(bubble);
         msgBubbles.put(mid, bubble);
@@ -3447,7 +3449,7 @@ public class ChatActivity extends Activity {
                 bubble = new LinearLayout(this);
                 bubble.setOrientation(LinearLayout.VERTICAL);
                 bubble.setPadding(dp(12), dp(10), dp(12), dp(10));
-                bubble.setBackgroundColor(Color.parseColor("#FFFFFF"));
+                bubble.setBackgroundColor(Palette.surface());
                 LinearLayout.LayoutParams bLp = new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
                 bLp.topMargin = dp(8);
@@ -3455,14 +3457,14 @@ public class ChatActivity extends Activity {
                 TextView roleTv = new TextView(this);
                 roleTv.setText("AI");
                 roleTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-                roleTv.setTextColor(Color.parseColor("#999999"));
+                roleTv.setTextColor(Palette.textMuted());
                 bubble.addView(roleTv);
                 msgBox.addView(bubble);
                 if (!mid.isEmpty()) msgBubbles.put(mid, bubble);
             }
             tv = new TextView(this);
             tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-            tv.setTextColor(Color.parseColor("#222222"));
+            tv.setTextColor(Palette.textPrimary());
             makeCopyable(tv);
             bubble.addView(tv);
             for (int ci = 0; ci < bubble.getChildCount(); ci++) {
@@ -3491,7 +3493,7 @@ public class ChatActivity extends Activity {
             if (bubble == null) return;
             tv = new TextView(this);
             tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, isText ? 16 : 14);
-            tv.setTextColor(Color.parseColor(isText ? "#222222" : "#555555"));
+            tv.setTextColor(isText ? Palette.textPrimary() : Palette.textSecondary());
             makeCopyable(tv);
             bubble.addView(tv);
             partViews.put(partID, tv);
@@ -3609,7 +3611,7 @@ public class ChatActivity extends Activity {
                     sb.setSpan(new UrlClickSpan(u), st, en, fl);
                 }
                 tv.setMovementMethod(android.text.method.LinkMovementMethod.getInstance());
-                tv.setHighlightColor(Color.parseColor("#33000000"));
+                tv.setHighlightColor(Palette.highlight());
             }
             tv.setText(sb);
         } catch (Exception e) {
@@ -3644,7 +3646,7 @@ public class ChatActivity extends Activity {
 
         @Override
         public void updateDrawState(android.text.TextPaint ds) {
-            ds.setColor(Color.parseColor("#1565C0"));
+            ds.setColor(Palette.link());
             ds.setUnderlineText(true);
         }
     }
@@ -3833,7 +3835,7 @@ public class ChatActivity extends Activity {
     private android.graphics.drawable.Drawable cellBg(int fill) {
         android.graphics.drawable.GradientDrawable g = new android.graphics.drawable.GradientDrawable();
         g.setColor(fill);
-        g.setStroke(dp(1), 0xFFCCCCCC);
+        g.setStroke(dp(1), Palette.border());
         return g;
     }
 
@@ -3858,7 +3860,7 @@ public class ChatActivity extends Activity {
             } else {
                 tv = new TextView(this);
                 tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-                tv.setTextColor(Color.parseColor("#222222"));
+                tv.setTextColor(Palette.textPrimary());
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                         LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
                 lp.topMargin = dp(4);
@@ -3898,7 +3900,7 @@ public class ChatActivity extends Activity {
                 TextView cell = new TextView(this);
                 cell.setText(v);
                 cell.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-                cell.setTextColor(Color.parseColor("#222222"));
+                cell.setTextColor(Palette.textPrimary());
                 cell.setPadding(dp(6), dp(4), dp(6), dp(4));
                 cell.setBackground(cellBg(header ? 0xFFEEEEEE : 0xFFFFFFFF));
                 if (header) cell.setTypeface(null, android.graphics.Typeface.BOLD);
@@ -3925,7 +3927,7 @@ public class ChatActivity extends Activity {
         final TextView scrollHint = new TextView(this);
         scrollHint.setText("← 表格较宽，可左右滑动查看 →");
         scrollHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        scrollHint.setTextColor(Color.parseColor("#999999"));
+        scrollHint.setTextColor(Palette.textMuted());
         scrollHint.setPadding(0, dp(2), 0, 0);
         scrollHint.setVisibility(android.view.View.GONE);
         bubble.addView(scrollHint, new LinearLayout.LayoutParams(
@@ -3941,12 +3943,12 @@ public class ChatActivity extends Activity {
         TextView tv = new TextView(this);
         tv.setText(code);
         tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-        tv.setTextColor(Color.parseColor("#222222"));
+        tv.setTextColor(Palette.textPrimary());
         tv.setTypeface(android.graphics.Typeface.MONOSPACE);
         tv.setPadding(dp(8), dp(6), dp(8), dp(6));
         makeCopyable(tv);
         android.widget.HorizontalScrollView hsv = new android.widget.HorizontalScrollView(this);
-        hsv.setBackgroundColor(Color.parseColor("#F2F2F2"));
+        hsv.setBackgroundColor(Palette.codeBg());
         hsv.addView(tv, new android.view.ViewGroup.LayoutParams(
                 android.view.ViewGroup.LayoutParams.WRAP_CONTENT,
                 android.view.ViewGroup.LayoutParams.WRAP_CONTENT));
@@ -3968,11 +3970,11 @@ public class ChatActivity extends Activity {
         final TextView header = new TextView(this);
         header.setText("💭 思考过程（点开看全部）");
         header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        header.setTextColor(Color.parseColor("#999999"));
+        header.setTextColor(Palette.textMuted());
         final TextView content = new TextView(this);
         content.setText(text);
         content.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
-        content.setTextColor(Color.parseColor("#888888"));
+        content.setTextColor(Palette.textMuted());
         content.setMaxLines(6);
         content.setEllipsize(android.text.TextUtils.TruncateAt.END);
         header.setOnClickListener(v -> {
@@ -4058,10 +4060,10 @@ public class ChatActivity extends Activity {
             rb.header = new TextView(this);
             rb.header.setText("💭 思考中…（点开看全部）");
             rb.header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-            rb.header.setTextColor(Color.parseColor("#999999"));
+            rb.header.setTextColor(Palette.textMuted());
             rb.content = new TextView(this);
             rb.content.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
-            rb.content.setTextColor(Color.parseColor("#888888"));
+            rb.content.setTextColor(Palette.textMuted());
             rb.content.setMaxLines(6);
             rb.content.setEllipsize(android.text.TextUtils.TruncateAt.END);
             final ReasonBlock frb = rb;

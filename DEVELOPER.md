@@ -46,6 +46,7 @@
         ├── MainActivity.java     # 会话列表页
         ├── ChatActivity.java     # 聊天页
         ├── CrashLogger.java      # 进程级崩溃日志（0.21.0：闪退写 Download/opencode/crash-*.txt）
+        ├── Palette.java          # 深色模式调色板（0.22.0：语义色 + 三态模式）
         └── BrowserActivity.java  # 浏览器页（0.17.0；0.18.0 起带读桥）
         └── BridgeServer.java     # 读桥（0.18.0：127.0.0.1:4098，随浏览器页生死）```
 
@@ -158,6 +159,19 @@
     `curl -s -X POST -H "X-Bridge-Token: $TOK" 127.0.0.1:4098/browser/eval -d '{"js":"document.title"}'`；
     点按钮：`'{"js":"document.querySelector(\"form button\").click()"}'`，填表：`'{"js":"document.querySelector(\"input\").value=\"x\""}'`。
 
+### 3.4 Palette.java（深色模式，0.22.0）
+
+- **背景**：以前颜色全写死在三个 Activity 里（`ChatActivity` 59 处、`MainActivity` 5 处、`BrowserActivity` 4 处，共 30 个色值），深色无从下手。
+- **做法**：`Palette` 提供语义色，内部 `c(dark, 浅色值, 深色值)` 两套；取色一律 `Palette.xxx()`，**禁止再写 `Color.parseColor("#…")`**（`Palette` 内部除外）。语义色清单：`pageBg / surface / barBg / userBubble / textPrimary / textSecondary / textMuted / rowBg / codeBg / border / permBg / permText / questionBg / questionText / error / okBg / okText / interrupted / accent / onAccent / link / scrim / highlight`。
+- **三态**：`MODE_SYSTEM / MODE_LIGHT / MODE_DARK` 存 `SharedPreferences(opencode_theme).mode`。`Palette.init(ctx)` 解析（跟随系统时读 `Configuration.uiMode` 的 `UI_MODE_NIGHT_MASK`）；`Palette.cycle(ctx)` 循环换档并落盘，同时 `gen++`。
+- **主题应用**：`Palette.apply(activity)` 在 `super.onCreate` 之后、建任何视图之前调用——`setTheme(Theme_Material_NoActionBar / Theme_Material_Light_NoActionBar)`，这样 `AlertDialog` / `Spinner` 弹层 / `EditText` / `Button` 的默认配色一起变（只改背景会得到「黑底浅控件」的拼接感）；同时设 `windowBackground`、状态栏/导航栏颜色与图标明暗（API 30+ 用 `WindowInsetsController.setSystemBarsAppearance`，以下用 `SYSTEM_UI_FLAG_LIGHT_STATUS_BAR|LIGHT_NAVIGATION_BAR`）。
+- **切换入口**：列表页标题行右侧按钮，文案即当前档（`🌓 跟随系统` / `☀️ 浅色` / `🌙 深色`），点一下换档再 `recreate()`——已建视图里的 Span 颜色改不动，重建最省事。对话框/下拉层因此也一起换。
+- **列表项**：`simple_list_item_1` 的正文色来自主题，深色底上必须显式给色，故新增 `RowAdapter`（**static**，D8 坑见 3.1）在 `getView` 里设 `Palette.textPrimary()`。
+- **常驻页跟随**：`BrowserActivity` 记 `themeGen = Palette.gen()`，`onResume` 发现代号变了就 `recreate()`（singleTask 常驻页不重建会「黑底浅控件」；WebView 重建但 cookie 在磁盘，登录态不掉）。`ChatActivity` 不处理：切档入口在列表页，聊天页返回即销毁。
+- **网页深色（尽力而为）**：API 33+ `setAlgorithmicDarkeningAllowed(isDark)`，29–32 `setForceDark(FORCE_DARK_ON/OFF)`，26–28 无 API；站点自带深色时以站点为准，算法暗化的效果不保证。
+- **配色值（浅 → 深）**：`pageBg #F5F5F5→#0F1216`、`surface #FFFFFF→#1B2026`、`textPrimary #222222→#E6EAF0`、`textSecondary #666666→#B2BAC4`、`textMuted #999999→#8B939D`、`rowBg/codeBg #EEEEEE/#F0F0F0→#242A31`、`border #CCCCCC→#3B444E`、`userBubble #DCF8C6→#24402C`、`permBg #FFF3E0→#3A2E1D`、`questionBg #E3F2FD→#16293C`、`error #C62828→#FF7B72`、`okText #2E7D32→#7FD88F`、`interrupted #8D6E63→#C3A69B`、`accent #1976D2→#2F6FD0`、`link #1565C0→#6CB0FF`。
+- **已知限制**：① 主题在 Activity 创建时定死，深浅切换必须重建页面；② 网页暗化依赖 WebView 版本，效果不可控；③ 系统通知/系统弹窗由系统主题决定，App 改不了。
+
 ## 4. Server API 表（OpenCode 2.0.12 已核实，App 只连 V2）
 核实方式：`https://opencode.ai/v2/openapi.json`（117 接口，已存 `$PREFIX/tmp/v2-openapi.json` 即 `/data/data/com.termux/files/usr/tmp/v2-openapi.json`）+ 本机 `2.0.12` 实测（4097 端口测试会话，事后已删）。**全部要 Basic 鉴权**（`opencode:<密码>`，密码来源见第 1 节），**全部包 `{data}` 信封**（列表另有 `cursor` 分页）。V1 表（`1.18.29`）已退役，见 git 历史。
 
@@ -229,6 +243,7 @@ SSE 事件 `type`（`data` 内含 `sessionID`）：`server.connected` / `session
 → 60=0.21.12 翻页按钮彻底收敛（0.21.11 之后真机：最老一页刚好 50 条时按钮仍顶着，点一下回 0 条才消失）。实测 `/message` 支持 `?limit=`，故整页取回后用 `?limit=1&cursor=…` 探针确认是否真有更早，回空即收起；`earlierProbeSeq` 防重拉后旧的探针结果乱改状态；网络异常按「有」保留入口；`versionCode 64`）。
 → 61=0.21.13 流式渲染节流（每个 delta 全文重建 Span+setText 是 O(n²)，长回复发热掉帧；现增量先入 buffer，UI 每 100ms 合并刷一次，滚动同步降频；在 text.ended/reasoning.ended/execution.succeeded|failed/abort 强制 flush，新建气泡首字立即刷，loadHistory/onDestroy 丢弃在途任务；`versionCode 65`）。
 → 63=0.21.15 修断线重连丢字/重复（根因：① SSE `setReadTimeout(0)` 无限等，死连接永不报错、横幅不出也不重连；② 重连只补 `busy` 不补正文；③ `text.delta` 按 messageID 定位，历史 `content[].id` 实测为空只能用 `mid#index`，两边键对不上 → 重拉后迟到增量另起 TextView 重复尾巴。现：SSE 读超时 60s（服务端 15s 一条 `: heartbeat`）→ 死连接必现异常走重连；重连 `pollSessionStatus(true)` 对活动会话 `loadHistory()` 补漏；`lastSseLineAt` 心跳时间戳 + `onResume` 超 25s 无字节则对账；`addPartView` 给最后 text 视图加 `mid` 别名、`addCollapsedReasoning(mid)` 登记 `ReasonBlock`，重拉后增量续写同一视图不再重复；`versionCode 67`）。
+→ 64=0.22.0 深色模式（三态：跟随系统 / 浅色 / 深色）。新增 `Palette.java`：23 个语义色 + 浅/深两套值，三个 Activity 的 68 处写死颜色全部换掉（`ChatActivity` 59、`MainActivity` 5、`BrowserActivity` 4）；`Palette.apply()` 切框架主题（`Theme_Material[_Light]_NoActionBar`），让 AlertDialog / Spinner 弹层 / EditText / Button 跟着变，并处理窗口底色与状态栏图标明暗；列表页标题行右侧加切换钮（文案即当前档）+ `recreate()`；新增 static `RowAdapter` 给列表项显式文字色（`simple_list_item_1` 的颜色来自主题，深色下会看不清）；`BrowserActivity` 记 `themeGen`，`onResume` 发现变档就 `recreate()`（常驻页不重建会黑底浅控件，cookie 在磁盘不掉登录），并尽力把网页暗化（33+ `setAlgorithmicDarkeningAllowed` / 29–32 `setForceDark`）；`versionCode 68`）。
 → 62=0.21.14 正文链接可点（`applyRichText` 出口统一走 `setLinkifiedText`：Linkify WEB_URLS + 自定义 `UrlClickSpan` 打开 App 内浏览器，失败退回系统；`LinkMovementMethod` + 蓝字下划线；长按复制与点击同时触发的老问题用 `lastLongPressAt` 900ms 抑制；`BrowserActivity.onNewIntent` 支持常驻页二次导航；`versionCode 66`）。
 - **环境**：`~/android-sdk`（platforms `android-33/35`、build-tools `34.0.4`）、`gradle` 仅备用（本项目不用）、JDK 21（`javac --release 17`）。
 
