@@ -63,6 +63,8 @@ public class ChatActivity extends Activity {
     // 为空即已到最早。earlierBtn 常驻消息列表顶部（msgBox index 0）。
     private String earlierCursor = null;
     private Button earlierBtn = null;
+    /** 0.22.4：上一条 assistant 是否已把 error 渲染进气泡，用于 idle 不重复显示。 */
+    private boolean lastRunErrorShown = false;
     private boolean loadingEarlier = false;
     private EditText input;
     private Button sendBtn;
@@ -1710,6 +1712,7 @@ public class ChatActivity extends Activity {
                 tp.put("text", utext);
                 parts.put(tp);
             }
+            lastRunErrorShown = false; // 新一轮用户发言，上一轮的错误提示翻篇
             // V2 user files: [{name,mime,source{uri},data?}] -> placeholder row
             JSONArray files = m.optJSONArray("files");
             if (files != null) {
@@ -1741,12 +1744,21 @@ public class ChatActivity extends Activity {
                 }
                 if (!p.has("messageID")) p.put("messageID", mid);
             }
+            // 0.22.4：V2 的失败原因挂在消息对象上（error{type,message,status}），
+            // 历史渲染必须带进 info —— 否则 content=[] 的失败消息只剩一句
+            // 「运行未成功：failed」，看着像断线（真机：provider.quota 429 被吞）。
+            JSONObject errObj = m.optJSONObject("error");
+            if (errObj != null) info.put("error", errObj);
+            lastRunErrorShown = errObj != null; // 失败原因已渲染进气泡，idle 只补壳
             renderMessage(info, parts);
         } else if ("idle".equals(type)) {
-            // completion marker: only visible when the run did NOT succeed
+            // completion marker: only visible when the run did NOT succeed.
+            // 0.22.4：失败原因已由 assistant 的 error 气泡显示时，这里不再重复
+            // 一句没有信息量的「运行未成功：failed」。
             String outcome = m.optString("outcome", "succeeded");
-            if (!"succeeded".equals(outcome) && !mid.isEmpty() && !msgBubbles.containsKey(mid)) {
-                boolean interrupted = "interrupted".equals(outcome) || "aborted".equals(outcome) || "cancelled".equals(outcome);
+            boolean interrupted = "interrupted".equals(outcome) || "aborted".equals(outcome) || "cancelled".equals(outcome);
+            if (!"succeeded".equals(outcome) && (interrupted || !lastRunErrorShown)
+                    && !mid.isEmpty() && !msgBubbles.containsKey(mid)) {
                 LinearLayout bubble = new LinearLayout(this);
                 bubble.setOrientation(LinearLayout.VERTICAL);
                 bubble.setPadding(dp(12), dp(10), dp(12), dp(10));
@@ -1759,6 +1771,7 @@ public class ChatActivity extends Activity {
                 msgBox.addView(bubble);
                 msgBubbles.put(mid, bubble);
             }
+            lastRunErrorShown = false;
         }
         // system/synthetic/skill/shell/compaction: not rendered (same as v1
         // ignoring snapshot/patch/step-*); full text stays in server history.
@@ -1803,7 +1816,7 @@ public class ChatActivity extends Activity {
                 String errMsg = extractErrorMsg(info);
                 TextView ph = new TextView(this);
                 if (!errMsg.isEmpty()) {
-                    ph.setText("❌ 发送失败：" + errMsg);
+                    ph.setText("❌ 运行失败：" + errMsg + errorHint(info));
                     ph.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
                     ph.setTextColor(Palette.error());
                 } else {
@@ -1991,6 +2004,23 @@ public class ChatActivity extends Activity {
             String name = err.optString("name", "");
             if (!name.isEmpty() && !"null".equals(name)) return name;
         } catch (Exception ignored) {
+        }
+        return "";
+    }
+
+    /** 0.22.4：给常见失败原因补一句中文提示（免费模型 429 额度、invalid-output）。 */
+    private static String errorHint(JSONObject info) {
+        JSONObject err = info.optJSONObject("error");
+        String type = err != null ? err.optString("type", "") : "";
+        String low = type.toLowerCase();
+        if (low.contains("quota")) {
+            return "\n提示：免费额度已用完（服务端 429），不是断线。换一个免费模型，或等额度重置。";
+        }
+        if (low.contains("invalid-output")) {
+            return "\n提示：免费模型偶发无效输出，点顶栏「↻ 重试」再跑一次。";
+        }
+        if (low.contains("network") || low.contains("timeout")) {
+            return "\n提示：网络到模型这一段断了，点顶栏「↻ 重试」。";
         }
         return "";
     }
@@ -3262,8 +3292,14 @@ public class ChatActivity extends Activity {
                 case "session.execution.failed": {
                     JSONObject err = d.optJSONObject("error");
                     String em = err != null ? err.optString("message", "") : "";
-                    if (em.length() > 80) em = em.substring(0, 80) + "…";
+                    if (em.length() > 160) em = em.substring(0, 160) + "…";
+                    String et = err != null ? err.optString("type", "") : "";
+                    String toastExtra = "";
+                    String elow = et.toLowerCase();
+                    if (elow.contains("quota")) toastExtra = "（免费额度用完，非断线；换模型或等重置）";
+                    else if (elow.contains("invalid-output")) toastExtra = "（免费模型偶发，点顶栏「↻ 重试」）";
                     final String ferr = em;
+                    final String fextra = toastExtra;
                     runOnUiThread(() -> {
                         suppressDone = true;
                         cancelDone();
@@ -3293,7 +3329,9 @@ public class ChatActivity extends Activity {
                                 retryBtn.setVisibility(Button.VISIBLE);
                             }
                             Toast.makeText(this,
-                                    ferr.isEmpty() ? "服务器出错，请下拉看记录" : "失败：" + ferr,
+                                    ferr.isEmpty()
+                                            ? "服务器出错，请下拉看记录" + fextra
+                                            : "失败：" + ferr + fextra,
                                     Toast.LENGTH_LONG).show();
                         }
                         setBusy(false);
