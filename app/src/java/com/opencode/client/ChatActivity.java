@@ -3547,7 +3547,7 @@ public class ChatActivity extends Activity {
         if (start < 0 || end <= start || end > sp.length()) return;
         sp.setSpan(new android.text.style.TypefaceSpan("monospace"), start, end,
                 android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
-        sp.setSpan(new android.text.style.BackgroundColorSpan(0xFFF2F2F2), start, end,
+        sp.setSpan(new android.text.style.BackgroundColorSpan(Palette.codeBg()), start, end,
                 android.text.Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
     }
 
@@ -3902,7 +3902,7 @@ public class ChatActivity extends Activity {
                 cell.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
                 cell.setTextColor(Palette.textPrimary());
                 cell.setPadding(dp(6), dp(4), dp(6), dp(4));
-                cell.setBackground(cellBg(header ? 0xFFEEEEEE : 0xFFFFFFFF));
+                cell.setBackground(cellBg(header ? Palette.rowBg() : Palette.surface()));
                 if (header) cell.setTypeface(null, android.graphics.Typeface.BOLD);
                 makeCopyable(cell);
                 tr.addView(cell);
