@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.opencode.client"
-    android:versionCode="73"
-    android:versionName="0.22.5">
+    android:versionCode="74"
+    android:versionName="0.22.6">
 
     <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="35" />
 
@@ -10,6 +10,9 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <!-- 0.22.6 前台 Service 兜底（跑完叫你）：Android 14+ 强制声明类型化前台服务 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <application
         android:label="OpenCode手机端"
@@ -43,5 +46,12 @@
             android:screenOrientation="portrait"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:windowSoftInputMode="adjustResize" />
+
+        <!-- 0.22.6：跑完叫你兜底。须在 App 前台时机启动（Android 14+ 禁后台起 FGS）；
+             空闲（无 await_ 项）自停，不常驻耗电 -->
+        <service
+            android:name=".WatchService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

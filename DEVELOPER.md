@@ -45,6 +45,7 @@
     └── src/java/com/opencode/client/
         ├── MainActivity.java     # 会话列表页
         ├── ChatActivity.java     # 聊天页
+        ├── WatchService.java     # 0.22.6：前台 Service 兜底（跑完叫你，App 被杀后仍提醒）
         ├── CrashLogger.java      # 进程级崩溃日志（0.21.0：闪退写 Download/opencode/crash-*.txt）
         ├── Palette.java          # 深色模式调色板（0.22.0：语义色 + 三态模式）
         ├── Edge.java             # 系统栏/键盘内边距（0.22.3：edge-to-edge 适配）
@@ -265,6 +266,7 @@ SSE 事件 `type`（`data` 内含 `sessionID`）：`server.connected` / `session
 → 67=0.22.3 修状态栏压住顶栏（targetSdk 35 在 Android 15 强制 edge-to-edge，本项目纯代码布局从未处理 insets，聊天页标题被状态栏时间/图标遮挡——真机截图实证）。新增 `Edge.java`：`Edge.apply(root[, onImeOpen])` 把 `statusBars|displayCutout` 的 top、`navigationBars/ime` 取最大后的 bottom 加到原 padding 上，三个 Activity 各接一行；`ChatActivity` 的键盘滚动改用同一监听器（删掉旧的纯 IME 监听）；`MainActivity` 顶部 padding 24dp→8dp 交给 insets；API<30 直接跳过，未强制 edge-to-edge 的机型 inset 为 0 不会双重留白；`versionCode 71`）。
 → 68=0.22.4 修「失败原因被吞看起来像断线」（真机：发消息 4 秒就空响应，App 只显示「❌ 运行未成功：failed」）。根因：V2 的失败原因挂在 **assistant 消息对象**上（`error{type,message,status}`，实测 `provider.quota` = 免费额度 429），而 `renderV2Message` 构造的 v1 形态 `info` 只有 role/id，`extractErrorMsg(info)` 永远拿不到 → 历史只剩 outcome，没有原因。现：① assistant 分支把 `m.error` 复制进 `info`；② `errorHint()` 给 quota/invalid-output/network 补中文提示（换模型 / 重试）；③ idle 在已显示原因时不再重复「运行未成功」壳（`lastRunErrorShown`，用户新发言时复位）；④ `execution.failed` 的 toast 从 80 字提到 160 并附提示；`versionCode 72`）。
 → 73=0.22.5 工具输出可见（真机：聊天里工具只有一行状态行 `✅ shell [completed] · df -h`，AI 到底跑了什么、结果一个字都看不到，要核对得切 Termux。实测 `GET /api/session/:id/message` 的 `content[{type:"tool"}].state.content` 携带完整输出（`[{type:"text",text:"…"}` 数组，单条最大 12KB）。现 `addPartView()` tool 分支完成后渲染 `addToolOutput()`：工具行下等宽 + codeBg 折叠 3 行 + 「▸ 展开/点收起」切换 + 长按复制全文；只动历史渲染路径，流式/text/reasoning 零改动；`versionCode 73`）。
+→ 74=0.22.6 前台 Service 兜底「跑完叫你」（旧机制只靠列表页 15 秒轮询 + 收尾通知，App 被系统杀死/冻结后没人监听，跑完用户不知道。新增顶层类 `WatchService.java`：前台 Service（`foregroundServiceType="dataSync"`，Android 14+ 强制，清单加 `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_DATA_SYNC` 两权限），15 秒轮询 `GET /api/session/active`，`await_<sid>` 消失 → 复用 `MainActivity.markJustDone()+notifyDone()` 通知 → 清 await → 空闲自停（startForeground 参数作用域见 startForegroundCompat，前台通知走 IMPORTANCE_LOW 渠道 "watch"）。**只在 App 前台时机启动**：`MainActivity.markAwaiting()` 内接 `WatchService.ensureStarted()`（发消息/记等待必经）+ 列表页 `onResume` 补一次（易漏 0.21.15 类后台拒绝场景直接 try-catch 退回旧行为）；**后台绝不 startForegroundService**（Android 14+ 抛 ForegroundServiceStartNotAllowedException）。双通知防重：MainActivity 加 static `CLAIMED` 同步集合 + `claimDone(sid)`，`checkDoneOnce()` 与 Service 谁先 claim 谁出通知；进程死后集合丢失但 `await_` 已被清，`awaitingMap` 空判断兜底不会二次通知。`BASE_URL` 从 private 放宽为包级 static 供 Service 复用，`auth()` 本已包级直用。为 D8 约束：Service 为顶层类无匿名内部类（doc §3.1）；实测 Android 16 真机（versionCode 74）。
 → 62=0.21.14 正文链接可点（`applyRichText` 出口统一走 `setLinkifiedText`：Linkify WEB_URLS + 自定义 `UrlClickSpan` 打开 App 内浏览器，失败退回系统；`LinkMovementMethod` + 蓝字下划线；长按复制与点击同时触发的老问题用 `lastLongPressAt` 900ms 抑制；`BrowserActivity.onNewIntent` 支持常驻页二次导航；`versionCode 66`）。
 - **环境**：`~/android-sdk`（platforms `android-33/35`、build-tools `34.0.4`）、`gradle` 仅备用（本项目不用）、JDK 21（`javac --release 17`）。
 

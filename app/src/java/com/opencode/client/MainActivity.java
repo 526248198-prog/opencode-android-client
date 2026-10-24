@@ -34,7 +34,7 @@ import java.util.Locale;
  */
 public class MainActivity extends Activity {
 
-    private static final String BASE_URL = "http://127.0.0.1:4097";
+    static final String BASE_URL = "http://127.0.0.1:4097";
     private static final String SERVER_USER = "opencode";
     // 密码不写死在源码里（本仓库公开）。优先读 PASSWORD_FILE 第一行；读不到用占位符，
     // 你也可以把下面这行直接改成自己的密码（但别把改后的版本推上来）。
@@ -206,6 +206,7 @@ public class MainActivity extends Activity {
     static void markAwaiting(android.content.Context ctx, String sid, String title) {
         if (sid == null || sid.isEmpty()) return;
         prefs(ctx).edit().putString("await_" + sid, title != null ? title : sid).apply();
+        WatchService.ensureStarted(ctx); // 0.22.6：前台时刻起兜底服务（后台起 FGS 是被禁的，这里必在前台）
     }
 
     static void clearAwaiting(android.content.Context ctx, String sid) {
@@ -234,6 +235,16 @@ public class MainActivity extends Activity {
 
     static void clearJustDone(android.content.Context ctx, String sid) {
         prefs(ctx).edit().remove("done_" + sid).apply();
+    }
+
+    // 0.22.6 双通知防重：列表页轮询（checkDoneOnce）与 WatchService 轮询都会发现
+    // 「await 消失」，谁先 claim 谁出通知；进程死后集合丢失，但 await_ 已被清，
+    // 再时对账靠 awaitingMap 非空判断，不会二次通知。
+    private static final java.util.Set<String> CLAIMED =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+
+    static boolean claimDone(String sid) {
+        return CLAIMED.add(sid);
     }
 
     /** 系统通知：点之回到该会话聊天页。无通知权限时系统直接丢弃，不崩。 */
@@ -499,6 +510,7 @@ public class MainActivity extends Activity {
             crashBtn.setVisibility(hasCrash ? Button.VISIBLE : Button.GONE);
         }
         loadSessions(); // 回来即重拉，刚完成的绿勾第一时间可见
+        WatchService.ensureStarted(this); // 0.22.6：还有在等项但兜底服务没在跑（进程被杀过）就补起
         startDoneWatch();
     }
 
@@ -548,6 +560,7 @@ public class MainActivity extends Activity {
                 if (finished.isEmpty()) return;
                 runOnUiThread(() -> {
                     for (String sid : finished) {
+                        if (!claimDone(sid)) continue; // 0.22.6：可能与 WatchService 重复发现
                         String t = awaiting.get(sid);
                         clearAwaiting(this, sid);
                         markJustDone(this, sid);
