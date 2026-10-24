@@ -45,19 +45,36 @@ public class WatchService extends Service {
     private final Handler main = new Handler(Looper.getMainLooper());
     private Thread worker;
 
-    /** App 前台时机调：有在等项才起（起服务也要求 system 有前台豁免，这里只在 Activity 界面里调）。 */
+    /** App 前台时刻调：有在等项才起（起服务也要求 system 有前台豁免，这里只在 Activity 界面里调）。 */
     public static void ensureStarted(Context ctx) {
         try {
-            if (alive) return;
-            if (MainActivity.awaitingMap(ctx).isEmpty()) return; // 无在等项不起，省电
+            if (alive) { log(ctx, "ensure: 已在跑，跳过"); return; }
+            if (MainActivity.awaitingMap(ctx).isEmpty()) { log(ctx, "ensure: 无在等项，不起"); return; } // 无在等项不起，省电
             Intent i = new Intent(ctx, WatchService.class);
             if (Build.VERSION.SDK_INT >= 26) {
                 ctx.startForegroundService(i);
+                log(ctx, "ensure: startForegroundService 已调");
             } else {
                 ctx.startService(i);
+                log(ctx, "ensure: startService 已调");
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
             // 真机上偶发后台拒绝：兜底失败退回旧行为（列表页轮询），无害
+            log(ctx, "ensure 失败: " + e);
+        }
+    }
+
+    /** 0.22.7 排障日志：watch.log 追加一行（Service 是否活、轮询结果、通知与否都能对账）。 */
+    public static void log(Context ctx, String msg) {
+        try {
+            String tag = new java.text.SimpleDateFormat("MM-dd HH:mm:ss",
+                    java.util.Locale.US).format(new java.util.Date());
+            java.io.File f = new java.io.File("/sdcard/Download/opencode/watch.log");
+            f.getParentFile().mkdirs();
+            java.io.FileOutputStream os = new java.io.FileOutputStream(f, true);
+            os.write((tag + " | " + msg + "\n").getBytes(StandardCharsets.UTF_8));
+            os.close();
+        } catch (Exception ignored) {
         }
     }
 
@@ -68,6 +85,7 @@ public class WatchService extends Service {
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        log(this, "onStartCommand: startId=" + startId);
         alive = true;
         startForegroundCompat();
         startWorker();
@@ -96,8 +114,10 @@ public class WatchService extends Service {
             } else {
                 startForeground(2001, n);
             }
+            log(this, "前台通知已挂（dataSync）");
         } catch (Exception e) {
             // 起前台失败没法履行 FGS 契约，直接退掉走旧轮询
+            log(this, "startForeground 失败: " + e);
             stopSelf();
         }
     }
@@ -113,20 +133,26 @@ public class WatchService extends Service {
             try {
                 Map<String, String> awaiting = MainActivity.awaitingMap(this);
                 if (awaiting.isEmpty()) {
+                    log(this, "轮询: 无在等项，自停");
                     finishQuietly();
                     break; // 无在等项：自停
                 }
                 JSONObject data = pollActive();
-                if (data != null) {
+                if (data == null) {
+                    log(this, "轮询: /active 失败(网络/鉴权)，等待下轮; 在等=" + awaiting.keySet());
+                } else {
+                    boolean anyRunning = false;
                     for (Map.Entry<String, String> e : awaiting.entrySet()) {
                         String sid = e.getKey();
-                        if (data.has(sid)) continue; // 还在跑
+                        if (data.has(sid)) { anyRunning = true; continue; } // 还在跑
                         if (!MainActivity.claimDone(sid)) continue; // 别处已出过
                         String t = e.getValue();
                         MainActivity.clearAwaiting(this, sid);
                         MainActivity.markJustDone(this, sid);
                         MainActivity.notifyDone(this, sid, t);
+                        log(this, "发现完成: " + sid + "（" + t + "）→ 已发通知");
                     }
+                    if (!anyRunning) log(this, "轮询: active 表=" + data.toString() + "（无一命中，见上）");
                 }
             } catch (Exception ignored) {
                 // 网络抖动：下个周期重试
@@ -178,6 +204,7 @@ public class WatchService extends Service {
 
     @Override
     public void onDestroy() {
+        log(this, "onDestroy: 服务离开（" + (worker != null && worker.isAlive() ? "worker 存活中" : "worker 已停") + "）");
         alive = false;
         if (worker != null) worker.interrupt();
         super.onDestroy();
