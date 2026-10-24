@@ -167,6 +167,9 @@ public class ChatActivity extends Activity {
     private boolean stoppedAwait = false; // 已按停止、等服务端确认中断的窗口期
     private String retryText = null; // server retry state (e.g. shaky VPN), cleared on busy/idle
     private volatile boolean sseOk = true; // event stream health; false = banner may be stale
+    // 0.21.15：最近一次收到任意一行（含 ": heartbeat"）的时间。服务端每 15 秒心跳一条，
+    // 拿它判断「连接看起来活着、实际什么都没收到」，回前台/重连时据此决定要不要对账。
+    private volatile long lastSseLineAt = 0;
     private final android.os.Handler uiHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private Runnable hideDoneTask = null;
     // Missed-idle guard: SSE is fire-and-forget, a single lost
@@ -641,6 +644,13 @@ public class ChatActivity extends Activity {
         //（还在跑则保留，跑完则清，免得切出去后重复提醒或漏提醒）
         MainActivity.clearJustDone(this, sessionID);
         reconcileAwaiting();
+        // 0.21.15：切后台/锁屏期间 socket 可能「活着但没数据」，回来后正文会缺一截。
+        // 心跳 15 秒一条，超过 25 秒一行都没有 = 期间不可信，按服务端重建一次
+        //（首次进页 lastSseLineAt 还是 0，跳过，免得和 loadHistory() 重复拉）。
+        if (lastSseLineAt > 0 && System.currentTimeMillis() - lastSseLineAt > 25000) {
+            loadHistory();
+            pollSessionStatus(false);
+        }
     }
 
     /** 进页对一次账：在跑则记下来，不在跑则清掉（已看完，无需提醒）。 */
@@ -1220,6 +1230,12 @@ public class ChatActivity extends Activity {
 
     /** Authoritative fallback: GET /api/session/active {data:{sid:…}}; absent = idle. */
     private void pollSessionStatus() {
+        pollSessionStatus(false);
+    }
+
+    /** 0.21.15：reconcile=true 表示刚从断线里回来——活动会话必须按服务端重拉一次补漏。
+     *  老逻辑只把 busy 补回来，断线期间生成的正文永远缺一截（要等整轮跑完才对齐）。 */
+    private void pollSessionStatus(final boolean reconcile) {
         new Thread(() -> {
             try {
                 URL url = new URL(BASE_URL + "/api/session/active");
@@ -1247,6 +1263,7 @@ public class ChatActivity extends Activity {
                         lastEventAt = System.currentTimeMillis();
                         if (!busy) setBusy(true);
                         else refreshStatus();
+                        if (reconcile) loadHistory(); // 断线期间的增量：以服务端为准重建
                     }
                 });
             } catch (Exception ignored) {
@@ -1866,13 +1883,22 @@ public class ChatActivity extends Activity {
                 partViews.put(pid, mapTv);
                 partBuf.put(pid, new StringBuilder(text));
             }
+            // 0.21.15：流式增量按 messageID 定位（事件里根本没有 partID），而实测
+            // /message 的 content[].id 全为空、历史只能用 mid#index 兜底。两者对不上，
+            // 于是「重拉历史后迟到的增量」会另起一个 TextView，把尾巴重复一遍。
+            // 补一条 mid 别名指向本条消息最后一个 text 视图（后面的会覆盖前面的），
+            // 重拉后增量就接着这个视图往下写。
+            if (!mid.isEmpty()) {
+                partViews.put(mid, mapTv);
+                partBuf.put(mid, new StringBuilder(text));
+            }
             return mapTv;
         } else if ("reasoning".equals(type)) {
             String rt = p.optString("text", "");
             if ("null".equals(rt)) rt = "";
             if (rt.trim().isEmpty()) return null; // empty thinking: no blank line
             // 0.21.2：历史思考也默认折叠 6 行，点标题展开（与流式一致）
-            return addCollapsedReasoning(bubble, rt);
+            return addCollapsedReasoning(bubble, rt, mid);
         } else if ("tool".equals(type)) {
             tv.setText(toolLine(p));
             tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
@@ -3079,7 +3105,10 @@ public class ChatActivity extends Activity {
                     c = (HttpURLConnection) url.openConnection();
                     MainActivity.auth(c);
                     c.setConnectTimeout(8000);
-                    c.setReadTimeout(0); // infinite for SSE
+                    // 0.21.15：别再用无限读超时。服务端每 15 秒发一条 ": heartbeat"，
+                    // 死连接（切网/休眠/被运营商掐）以前会永远卡在 readLine 上，
+                    // 断开横幅都不出、也不重连；60 秒没一条就当断线。
+                    c.setReadTimeout(60000);
                     c.setRequestMethod("GET");
                     c.setRequestProperty("Accept", "text/event-stream");
                     c.connect();
@@ -3088,12 +3117,14 @@ public class ChatActivity extends Activity {
                     sseWasDown = false;
                     runOnUiThread(() -> refreshStatus());
                     if (wasDown) {
-                        pollSessionStatus();
+                        pollSessionStatus(true); // 断线补漏：活动会话重拉一遍
                     }
                     BufferedReader r = new BufferedReader(
                             new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
                     String line;
+                    lastSseLineAt = System.currentTimeMillis();
                     while (sseRunning && (line = r.readLine()) != null) {
+                        lastSseLineAt = System.currentTimeMillis(); // 心跳注释也算活着的证据
                         line = line.trim();
                         if (!line.startsWith("data:")) continue;
                         handleEvent(line.substring(5).trim());
@@ -3928,6 +3959,12 @@ public class ChatActivity extends Activity {
 
     /** 历史思考折叠（0.21.2）：默认 6 行，点标题展开/收起，与流式思考块一致。返回内容视图。 */
     private TextView addCollapsedReasoning(LinearLayout bubble, String text) {
+        return addCollapsedReasoning(bubble, text, "");
+    }
+
+    /** 0.21.15：历史思考块按 mid 登记，重拉历史后迟到的 reasoning.delta 接在它后面，
+     *  不再另开一个「思考中…」块（那会重复一整段思考）。 */
+    private TextView addCollapsedReasoning(LinearLayout bubble, String text, String mid) {
         final TextView header = new TextView(this);
         header.setText("💭 思考过程（点开看全部）");
         header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
@@ -3948,6 +3985,14 @@ public class ChatActivity extends Activity {
         makeCopyable(content);
         bubble.addView(header);
         bubble.addView(content);
+        if (mid != null && !mid.isEmpty()) {
+            ReasonBlock rb = new ReasonBlock();
+            rb.header = header;
+            rb.content = content;
+            rb.buf.append(text);
+            rb.done = true; // 历史里的思考已结束
+            reasonBlocks.put(mid, rb);
+        }
         return content;
     }
 
