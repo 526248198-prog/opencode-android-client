@@ -1907,6 +1907,11 @@ public class ChatActivity extends Activity {
             tv.setTextColor(Palette.textSecondary());
             tv.setBackgroundColor(Palette.codeBg());
             if (!pid.isEmpty()) partViews.put(pid, tv);
+            // 0.22.5：工具输出可见——完成后把 state.content 渲染在工具行下（默认折叠）
+            makeCopyable(tv);
+            bubble.addView(tv);
+            addToolOutput(bubble, p);
+            return tv;
         } else if ("file".equals(type)) {
             // file placeholder: NEVER dump url content into the bubble.
             // Server stores attachments as data:<mime>;base64,… (≈27KB for a 20KB .md),
@@ -1964,6 +1969,63 @@ public class ChatActivity extends Activity {
     private static String safeFileStr(String s) {
         if (s == null || "null".equals(s)) return "";
         return s;
+    }
+
+    /**
+     * 0.22.5 工具输出可见：只处理历史渲染的 tool 分支（不动流式/事件路径）。
+     * 实测 V2 state.content = [{type:"text",text:"…"}, …]（单条最大 12KB），
+     * 逐项取 .text 拼接，completed 才显示；空数组不显示。
+     * 渲染在工具行下：等宽 + codeBg，默认折叠 3 行 + 「▸ 展开/▾ 收起」，
+     * 长按复制全文（makeCopyable 拿的是 TextView 全文，maxLines 只影响显示）。
+     */
+    private void addToolOutput(LinearLayout bubble, JSONObject p) {
+        try {
+            JSONObject st = p.optJSONObject("state");
+            if (st == null) return;
+            if (!"completed".equals(st.optString("status"))) return;
+            Object c = st.opt("content");
+            StringBuilder sb = new StringBuilder();
+            if (c instanceof JSONArray) {
+                JSONArray arr = (JSONArray) c;
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject it = arr.optJSONObject(i);
+                    String t = it != null ? safeFileStr(it.optString("text", ""))
+                            : String.valueOf(arr.opt(i));
+                    if (!t.isEmpty() && !"null".equals(t)) {
+                        if (sb.length() > 0) sb.append('\n');
+                        sb.append(t);
+                    }
+                }
+            } else if (c instanceof String) { // 兼容：极老版本可能直接是字符串
+                String s = (String) c;
+                if (!s.isEmpty()) sb.append(s);
+            }
+            final String full = sb.toString();
+            if (full.isEmpty()) return;
+            final TextView out = new TextView(this);
+            out.setTypeface(android.graphics.Typeface.MONOSPACE);
+            out.setText(full);
+            out.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            out.setTextColor(Palette.textSecondary());
+            out.setBackgroundColor(Palette.codeBg());
+            out.setPadding(dp(8), dp(4), dp(8), dp(4));
+            out.setMaxLines(3);
+            out.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            makeCopyable(out); // 长按复制全文
+            bubble.addView(out);
+            final TextView hdr = new TextView(this);
+            hdr.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            hdr.setTextColor(Palette.textMuted());
+            hdr.setText("▸ 工具输出（点展开）");
+            hdr.setOnClickListener(v -> {
+                boolean expanded = out.getMaxLines() == Integer.MAX_VALUE;
+                out.setMaxLines(expanded ? 3 : Integer.MAX_VALUE);
+                out.setEllipsize(expanded ? android.text.TextUtils.TruncateAt.END : null);
+                hdr.setText(expanded ? "▸ 工具输出（点展开）" : "▾ 工具输出（点收起）");
+            });
+            bubble.addView(hdr);
+        } catch (Exception ignored) {
+        }
     }
 
     /** Long-press copy of an explicit string (collapsed synthetic placeholder). */

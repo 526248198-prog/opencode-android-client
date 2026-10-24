@@ -3,7 +3,7 @@
 > 接手前**必读**：`DEVELOPER.md` 全文（第 3 节代码地图 + §3.4/§3.5 深色与内边距）。
 > 当前版本 `versionCode 72 = 0.22.4`；新会话从 `73` 起加。构建/发布/文档同步规矩全在 DEVELOPER.md §5。
 
-## P1 工具输出可见（默认折叠）★ 下一项就做这个
+## P1 工具输出可见（默认折叠）✅ 已结项（0.22.5，versionCode 73，等真机复验后从清单摘除）
 
 - **现状**：`GET /api/session/:id/message` 的 assistant `content[{type:"tool"}]` 里，`state.content` 携带完整工具输出，**实测单条最大 12KB**（shell/read），但 `ChatActivity.addPartView()` 的 tool 分支只渲染一行状态（`toolLine()`：`✅ shell [completed] · df -h`），输出一个字都看不到。用户想核对 AI 到底跑了什么、结果是什么，只能切 Termux。历史渲染和既有的 synthetic 折叠逻辑都在，缺的就是把 `state.content` 摘出来。
 - **目标**：
