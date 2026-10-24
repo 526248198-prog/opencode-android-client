@@ -56,6 +56,10 @@ public class ChatActivity extends Activity {
     }
     private LinearLayout msgBox;
     private ScrollView scrollView;
+    // 0.21.7 滚动不锁死：只有视图贴底时才自动跟随新内容。用户手动上滑看历史时暂停跟随，
+    // 右下方浮出「⬇ 回到底部」按钮；滑回底部或点按钮即恢复自动跟随。
+    private boolean stickToBottom = true;
+    private TextView jumpBtn;
     // 历史翻页（0.13.10 存 previous 走错方向，0.13.11 改存 next）：服务端默认只回最新 50 条（倒序）；earlierCursor 存 cursor.next，
     // 为空即已到最早。earlierBtn 常驻消息列表顶部（msgBox index 0）。
     private String earlierCursor = null;
@@ -134,6 +138,27 @@ public class ChatActivity extends Activity {
     private LinearLayout statusBanner;
     private TextView statusText;
     private final java.util.LinkedHashMap<String, String> runningTools = new java.util.LinkedHashMap<>();
+    // 0.21.9：工具事件里只有 input.started 带 name，按 id 记住，called/progress 复用
+    private final java.util.HashMap<String, String> liveToolNames = new java.util.HashMap<>();
+    private final java.util.HashMap<String, String> liveToolDetails = new java.util.HashMap<>();
+    // 0.21.10：`date` 这类工具全程仅 ~160ms，事件一到就摘状态的话横幅根本画不出来。
+    // 完成后把结果再挂 1.5 秒（✅ 已完成 · 目标），保证肉眼能看到。
+    private String lingerToolText = null;
+    private Runnable lingerHideTask = null;
+    private static final long TOOL_LINGER_MS = 1500;
+    // 服务端 GET /message 默认页大小（App 不传 limit）
+    private static final int MSG_PAGE_SIZE = 50;
+    // 0.21.12：翻页探针序号，重拉历史后让在途的旧探针结果失效
+    private int earlierProbeSeq = 0;
+
+    /** 0.21.11：服务端第一页永远回非空 cursor.next（实测：短会话跟进去是 0 条 + next=null），
+     *  不能拿「next 非空」当「还有更早」，否则每个会话都顶着一个没用的翻页按钮。 */
+    private static String normCursor(String c) {
+        if (c == null) return "";
+        String v = c.trim();
+        if (v.isEmpty() || "null".equalsIgnoreCase(v) || "undefined".equalsIgnoreCase(v)) return "";
+        return v;
+    }
     private boolean writingShown = false;
     private boolean thinkingShown = false; // reasoning 阶段：⏳ 与 ✍️ 之间显示 💭
     private boolean doneShowing = false;
@@ -462,16 +487,42 @@ public class ChatActivity extends Activity {
         qRow.addView(qSkip, qkLp);
         qSkip.setOnClickListener(v -> rejectQuestion());
 
-        // messages
-        scrollView = new ScrollView(this);
+        // messages（0.21.7：ScrollView 外套 FrameLayout，右下角悬浮「回到底部」按钮）
+        android.widget.FrameLayout msgFrame = new android.widget.FrameLayout(this);
         LinearLayout.LayoutParams sLp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f);
-        root.addView(scrollView, sLp);
+        root.addView(msgFrame, sLp);
+
+        scrollView = new ScrollView(this);
+        msgFrame.addView(scrollView, new android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                android.widget.FrameLayout.LayoutParams.MATCH_PARENT));
+        // 贴底判定：滚动结束后看是否还能往下滚（留 24dp 容差，避免像素级抖动）
+        scrollView.setOnScrollChangeListener((v, sx, sy, osx, osy) -> updateStick());
 
         msgBox = new LinearLayout(this);
         msgBox.setOrientation(LinearLayout.VERTICAL);
         msgBox.setPadding(dp(12), dp(12), dp(12), dp(12));
         scrollView.addView(msgBox);
+
+        jumpBtn = new TextView(this);
+        jumpBtn.setText("⬇ 回到底部");
+        jumpBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+        jumpBtn.setTextColor(Color.WHITE);
+        android.graphics.drawable.GradientDrawable jbBg =
+                new android.graphics.drawable.GradientDrawable();
+        jbBg.setColor(Color.parseColor("#99000000"));
+        jbBg.setCornerRadius(dp(18));
+        jumpBtn.setBackground(jbBg);
+        jumpBtn.setPadding(dp(14), dp(8), dp(14), dp(8));
+        jumpBtn.setVisibility(View.GONE);
+        android.widget.FrameLayout.LayoutParams jLp = new android.widget.FrameLayout.LayoutParams(
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT,
+                android.widget.FrameLayout.LayoutParams.WRAP_CONTENT);
+        jLp.gravity = Gravity.BOTTOM | Gravity.END;
+        jLp.setMargins(0, 0, dp(12), dp(12));
+        msgFrame.addView(jumpBtn, jLp);
+        jumpBtn.setOnClickListener(v -> scrollDownForce());
 
         // 历史翻页按钮（0.13.10）：只在还有更早页时显示，由 refreshEarlierBtn() 管理显隐
         earlierBtn = new Button(this);
@@ -514,7 +565,7 @@ public class ChatActivity extends Activity {
         bottom.addView(input, iLp);
         // keyboard fix: when input gains focus, scroll to latest message
         input.setOnFocusChangeListener((v, hasFocus) -> {
-            if (hasFocus) scrollView.postDelayed(() -> scrollView.fullScroll(ScrollView.FOCUS_DOWN), 300);
+            if (hasFocus) scrollView.postDelayed(() -> scrollDown(), 300);
         });
 
         // (stop button lives top-right; bottom bar keeps [image][input][send])
@@ -550,6 +601,7 @@ public class ChatActivity extends Activity {
         }
 
         setContentView(root);
+        restoreDraft(); // 0.21.9：上次切走前打了一半的内容回填
 
         loadHistory();
         refreshSessionCost();
@@ -566,6 +618,7 @@ public class ChatActivity extends Activity {
     @Override
     protected void onDestroy() {
         sseRunning = false;
+        dropPendingFlush();
         try {
             if (watchdogTask != null) uiHandler.removeCallbacks(watchdogTask);
         } catch (Exception ignored) {
@@ -615,7 +668,34 @@ public class ChatActivity extends Activity {
     @Override
     protected void onPause() {
         uiVisible = false;
+        saveDraft(); // 0.21.9：切走/锁屏不丢已打好的字
         super.onPause();
+    }
+
+    private static final String DRAFT_PREFS = "opencode_drafts";
+
+    /** 草稿按会话存取：写一半切出去查东西，回来还在。 */
+    private void saveDraft() {
+        try {
+            if (input == null) return;
+            getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE).edit()
+                    .putString("d_" + sessionID, input.getText().toString())
+                    .apply();
+        } catch (Exception ignored) {
+        }
+    }
+
+    private void restoreDraft() {
+        try {
+            if (input == null) return;
+            String d = getSharedPreferences(DRAFT_PREFS, MODE_PRIVATE)
+                    .getString("d_" + sessionID, "");
+            if (d != null && !d.isEmpty()) {
+                input.setText(d);
+                input.setSelection(d.length());
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     private void pickFile(String mimeType, int requestCode) {
@@ -824,7 +904,34 @@ public class ChatActivity extends Activity {
                 TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
     }
 
+    /** 视图是否贴底（留 24dp 容差）。 */
+    private boolean isAtBottom() {
+        if (scrollView == null || scrollView.getChildCount() == 0) return true;
+        View child = scrollView.getChildAt(0);
+        int remaining = child.getHeight() - (scrollView.getScrollY() + scrollView.getHeight());
+        return remaining <= dp(24);
+    }
+
+    /** 用户滚动后重算是否继续自动跟随，并显隐「回到底部」按钮。 */
+    private void updateStick() {
+        boolean atBottom = isAtBottom();
+        stickToBottom = atBottom;
+        if (jumpBtn != null) {
+            jumpBtn.setVisibility(atBottom ? View.GONE : View.VISIBLE);
+        }
+    }
+
+    /** 仅当用户贴底时才自动跟随；上滑看历史时绝不抢滚动位置（0.21.7）。 */
     private void scrollDown() {
+        if (scrollView == null || !stickToBottom) return;
+        scrollView.post(() -> scrollView.fullScroll(ScrollView.FOCUS_DOWN));
+    }
+
+    /** 强制回到底部并恢复自动跟随（自己发消息、首次进页、点「回到底部」）。 */
+    private void scrollDownForce() {
+        if (scrollView == null) return;
+        stickToBottom = true;
+        if (jumpBtn != null) jumpBtn.setVisibility(View.GONE);
         scrollView.post(() -> scrollView.fullScroll(ScrollView.FOCUS_DOWN));
     }
 
@@ -833,10 +940,32 @@ public class ChatActivity extends Activity {
         runOnUiThread(() -> {
             sendBtn.setEnabled(true); // V2 支持 busy 时排队 steer，不再禁用发送
             if (stopBtn != null) stopBtn.setVisibility(b ? Button.VISIBLE : Button.GONE);
-            if (b) { startWatchdog(); startToolPoll(); }
+            if (b) { startWatchdog(); startBusyPoll(); }
             else { stopWatchdog(); toolPollOn = false; }
             refreshStatus(); // never write statusView directly: single source of truth
         });
+    }
+
+    /** 清掉残留的工具行（新工具开始 / 新一发 / 完成时）。 */
+    private void clearToolLinger() {
+        lingerToolText = null;
+        if (lingerHideTask != null) {
+            uiHandler.removeCallbacks(lingerHideTask);
+            lingerHideTask = null;
+        }
+    }
+
+    /** 工具完成：结果在横幅多留 1.5 秒再收，否则瞬时工具肉眼看不见。 */
+    private void showToolDone(String doneText) {
+        clearToolLinger();
+        lingerToolText = doneText;
+        lingerHideTask = () -> {
+            lingerToolText = null;
+            lingerHideTask = null;
+            refreshStatus();
+        };
+        uiHandler.postDelayed(lingerHideTask, TOOL_LINGER_MS);
+        refreshStatus();
     }
 
     /** Title line + fixed banner always agree. UI thread only. */
@@ -861,6 +990,7 @@ public class ChatActivity extends Activity {
         }
         String banner;
         String tool = currentToolText();
+        if (tool == null) tool = lingerToolText;
         if (retryText != null) {
             banner = retryText;
         } else if (tool != null) {
@@ -897,6 +1027,12 @@ public class ChatActivity extends Activity {
         if (input == null) return "";
         String name = p.optString("name", "");
         if (name.isEmpty()) name = p.optString("tool", "");
+        return detailFromInput(name, input);
+    }
+
+    /** 0.21.9：tool 事件只有 input 对象，detail 逻辑与历史 part 共用。 */
+    private static String detailFromInput(String name, JSONObject input) {
+        if (input == null) return "";
         String v = "";
         switch (name) {
             case "shell":
@@ -968,85 +1104,22 @@ public class ChatActivity extends Activity {
         }
     }
 
-    private void onToolState(String partID, String tool, String stateStatus, String title) {
-        if ("running".equals(stateStatus) || "pending".equals(stateStatus)) {
-            cancelDone();
-            writingShown = false;
-            if (!partID.isEmpty()) runningTools.put(partID, friendlyToolText(tool, title, ""));
-        } else {
-            runningTools.remove(partID); // completed / error
-        }
-        refreshStatus();
-    }
-
-    /** V2 无 part 级 tool SSE 事件，忙时每 3 秒轮询消息快照，把运行中的工具同步进 runningTools，
-     *  让上方状态栏实时显示"在干什么"，而不是只有一个空白 AI 气泡。 */
-    private void startToolPoll() {
+    /** 0.21.9：工具状态改由 `session.tool.*` 事件驱动（见 handleEvent），这里只保留
+     *  「审批/提问」轻量轮询兜底——SSE 是易失的，丢一个 permission 事件就永远不弹。
+     *  以前同一循环每 3 秒还拉一次 `/api/session/:id/message`（整包 50 条含工具全量输出，
+     *  长会话能到几 MB）只为读工具状态，纯浪费流量和电；已删除。 */
+    private void startBusyPoll() {
         if (toolPollOn) return;
         toolPollOn = true;
         new Thread(() -> {
             while (toolPollOn && busy) {
                 try { Thread.sleep(3000); } catch (InterruptedException ignored) { break; }
                 if (!toolPollOn || !busy) break;
-                pollToolStateOnce();
-                // SSE 是易失的（慢消费者会丢事件），忙时轮询兜底权限/提问，避免审批条永远不弹
+                // 只查这两个小接口（都是空数组/几条），不再碰 message 大包
                 checkPendingPerm();
                 checkPendingQuestions(true);
             }
             toolPollOn = false;
-        }).start();
-    }
-
-    private void pollToolStateOnce() {
-        new Thread(() -> {
-            try {
-                URL url = new URL(BASE_URL + "/api/session/" + sessionID + "/message");
-                HttpURLConnection c = (HttpURLConnection) url.openConnection();
-                MainActivity.auth(c);
-                c.setConnectTimeout(5000);
-                c.setReadTimeout(8000);
-                c.setRequestMethod("GET");
-                if (c.getResponseCode() != 200) return;
-                JSONArray arr = new JSONObject(readAll(c.getInputStream())).optJSONArray("data");
-                if (arr == null) return;
-                JSONObject last = null;
-                for (int i = 0; i < arr.length(); i++) { // V2 消息倒序，第一个 assistant 即最新
-                    JSONObject m = arr.getJSONObject(i);
-                    if ("assistant".equals(m.optString("type"))) { last = m; break; }
-                }
-                if (last == null) return;
-                final String mid = last.optString("id", "");
-                JSONArray parts = last.optJSONArray("content");
-                final java.util.List<String[]> updates = new java.util.ArrayList<>();
-                final java.util.Set<String> runningIds = new java.util.HashSet<>();
-                if (parts != null) {
-                    for (int i = 0; i < parts.length(); i++) {
-                        JSONObject p = parts.optJSONObject(i);
-                        if (p == null || !"tool".equals(p.optString("type"))) continue;
-                        String pid = p.optString("id", "");
-                        if (pid.isEmpty()) pid = mid + "#" + i;
-                        String name = p.optString("name", "");
-                        if (name.isEmpty()) name = p.optString("tool", "");
-                        JSONObject st = p.optJSONObject("state");
-                        String status = st != null ? st.optString("status", "") : "";
-                        String title = st != null ? st.optString("title", "") : "";
-                        updates.add(new String[]{pid, name, status, title, toolDetail(p)});
-                        if ("running".equals(status) || "pending".equals(status) || "streaming".equals(status)) runningIds.add(pid);
-                    }
-                }
-                runOnUiThread(() -> {
-                    for (String[] u : updates) {
-                        if ("running".equals(u[2]) || "pending".equals(u[2]) || "streaming".equals(u[2])) {
-                            runningTools.put(u[0], friendlyToolText(u[1], u[3], u[4]));
-                        } else {
-                            runningTools.remove(u[0]);
-                        }
-                    }
-                    runningTools.keySet().retainAll(runningIds);
-                    if (!runningTools.isEmpty() || !updates.isEmpty()) refreshStatus();
-                });
-            } catch (Exception ignored) {
-            }
         }).start();
     }
 
@@ -1060,6 +1133,9 @@ public class ChatActivity extends Activity {
 
     private void showDone() {
         runningTools.clear();
+        liveToolNames.clear();
+        liveToolDetails.clear();
+        clearToolLinger();
         writingShown = false;
         doneShowing = true;
         if (hideDoneTask != null) uiHandler.removeCallbacks(hideDoneTask);
@@ -1089,6 +1165,9 @@ public class ChatActivity extends Activity {
         stoppedAwait = false;
         retryText = null;
         runningTools.clear();
+        liveToolNames.clear();
+        liveToolDetails.clear();
+        clearToolLinger();
         writingShown = false;
         thinkingShown = false;
         setBusy(false);
@@ -1157,6 +1236,9 @@ public class ChatActivity extends Activity {
                         if (busy) onServerIdle();
                         else {
                             runningTools.clear();
+                            liveToolNames.clear();
+        liveToolDetails.clear();
+        clearToolLinger();
                             writingShown = false;
                             if (stoppedAwait) { stoppedAwait = false; stoppedManually = false; suppressDone = false; loadHistory(); }
                             refreshStatus();
@@ -1424,7 +1506,8 @@ public class ChatActivity extends Activity {
                 JSONArray arr = root.optJSONArray("data");
                 if (arr == null) throw new Exception("无data");
                 JSONObject cur = root.optJSONObject("cursor");
-                final String nxt = cur != null ? cur.optString("next", "") : "";
+                final String nxt = normCursor(cur != null ? cur.optString("next", "") : "");
+                final int fetched = arr.length();
                 // V2 服务端返回倒序（新在前），先反转再按 time.created 稳定升序（同毫秒保持服务端正序）
                 java.util.List<JSONObject> msgs = new java.util.ArrayList<>();
                 for (int i = 0; i < arr.length(); i++) msgs.add(arr.getJSONObject(i));
@@ -1433,13 +1516,22 @@ public class ChatActivity extends Activity {
                     a.optJSONObject("time") != null ? a.optJSONObject("time").optLong("created") : 0,
                     b.optJSONObject("time") != null ? b.optJSONObject("time").optLong("created") : 0));
                 runOnUiThread(() -> {
+                    // 首次进页（列表还是空）强制到底；跑完重拉时尊重用户当前位置，
+                    // 免得正在上滑看历史时被拽回底部（0.21.7）
+                    boolean firstRender = msgBox.getChildCount() == 0 || stickToBottom;
+                    final int y0 = scrollView.getScrollY();
+                    dropPendingFlush();
                     msgBox.removeAllViews();
                     partViews.clear();
                     partBuf.clear();
                     reasonBlocks.clear();
                     msgBubbles.clear();
                     loadingEarlier = false;
-                    earlierCursor = nxt.isEmpty() ? null : nxt;
+                    // 只有真的取满一页才可能有更早（短会话直接不显示按钮）；
+                    // 整页时再用 limit=1 探针确认，避免最老一页还顶着一个点了回 0 条的按钮
+                    earlierCursor = null;
+                    final int pseq = ++earlierProbeSeq;
+                    if (fetched >= MSG_PAGE_SIZE && !nxt.isEmpty()) probeHasEarlier(nxt, pseq);
                     refreshEarlierBtn();
                     for (JSONObject m : msgs) {
                         try {
@@ -1447,8 +1539,16 @@ public class ChatActivity extends Activity {
                         } catch (Exception ignored) {
                         }
                     }
-                    scrollDown();
+                    if (firstRender) {
+                        scrollDownForce();
+                    } else {
+                        // 用户在上滑看历史：重渲染后回到原来的位置（removeAllViews 会归零）
+                        scrollView.post(() -> scrollView.scrollTo(0, y0));
+                    }
                     runningTools.clear();
+                    liveToolNames.clear();
+        liveToolDetails.clear();
+        clearToolLinger();
                     writingShown = false;
                     thinkingShown = false;
                     if (!doneShowing) refreshStatus();
@@ -1459,6 +1559,36 @@ public class ChatActivity extends Activity {
                     Toast.makeText(this, "加载失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
                 });
             }
+        }).start();
+    }
+
+    /** 0.21.12：服务端 `next` 游标不表示「还有」，只在取满一页时用 limit=1 探一下真伪，
+     *  探针回空即收起按钮（省掉「点一下显示0条」的操作）。网络异常按「有」处理，别把入口弄丢。 */
+    private void probeHasEarlier(final String cursor, final int seq) {
+        new Thread(() -> {
+            boolean has = true;
+            try {
+                String u = BASE_URL + "/api/session/" + sessionID + "/message?limit=1&cursor="
+                        + java.net.URLEncoder.encode(cursor, "UTF-8");
+                HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
+                MainActivity.auth(c);
+                c.setConnectTimeout(5000);
+                c.setReadTimeout(8000);
+                c.setRequestMethod("GET");
+                if (c.getResponseCode() == 200) {
+                    JSONArray arr = new JSONObject(readAll(c.getInputStream())).optJSONArray("data");
+                    has = arr != null && arr.length() > 0;
+                }
+            } catch (Exception ignored) {
+            }
+            final boolean fhas = has;
+            runOnUiThread(() -> {
+                if (seq != earlierProbeSeq) return; // 已被新的历史重拉取代
+                if (!fhas) {
+                    earlierCursor = null;
+                    refreshEarlierBtn();
+                }
+            });
         }).start();
     }
 
@@ -1506,7 +1636,7 @@ public class ChatActivity extends Activity {
                 JSONArray arr = root.optJSONArray("data");
                 if (arr == null) throw new Exception("无data");
                 JSONObject cu = root.optJSONObject("cursor");
-                final String nnxt = cu != null ? cu.optString("next", "") : "";
+                final String nnxt = normCursor(cu != null ? cu.optString("next", "") : "");
                 java.util.List<JSONObject> msgs = new java.util.ArrayList<>();
                 for (int i = 0; i < arr.length(); i++) msgs.add(arr.getJSONObject(i));
                 // 服务端倒序（新在前）：先反转再稳定排序，同 created 并列时保持服务端正序（旧在前）
@@ -1537,8 +1667,11 @@ public class ChatActivity extends Activity {
                         for (android.view.View v : moved) msgBox.removeView(v);
                         for (int i = 0; i < moved.size(); i++) msgBox.addView(moved.get(i), base + i);
                     }
-                    earlierCursor = nnxt.isEmpty() ? null : nnxt;
+                    // 空页或全是已渲染的重复条目 = 已到最早，别再让按钮空转
+                    earlierCursor = (msgs.isEmpty() || addedViews == 0 || nnxt.isEmpty()) ? null : nnxt;
                     loadingEarlier = false;
+                    final int pseq = ++earlierProbeSeq;
+                    if (earlierCursor != null) probeHasEarlier(earlierCursor, pseq);
                     refreshEarlierBtn();
                     scrollView.post(() -> scrollView.scrollTo(0, y0 + Math.max(0, msgBox.getHeight() - h0)));
                     Toast.makeText(this,
@@ -1921,6 +2054,7 @@ public class ChatActivity extends Activity {
         if (text.isEmpty() && attachPath == null) return;
         final boolean wasBusy = busy; // busy 时发 = 排队/steer，服务端会接管（实测 delivery:"steer"）
         input.setText("");
+        saveDraft(); // 已发出，草稿清掉，下次进来不该回填旧内容
         lastSentText = text; // 再试一次就重发这句；带附件那次只记文字
         lastHadAttach = attachPath != null;
         if (retryBtn != null) retryBtn.setVisibility(Button.GONE); // 新一发，旧失败翻篇
@@ -1955,7 +2089,7 @@ public class ChatActivity extends Activity {
                     parts.put(fp);
                 }
                 renderMessage(info, parts);
-                scrollDown();
+                scrollDownForce(); // 自己刚发消息：回到底部并恢复跟随
             } catch (Exception ignored) {
             }
         });
@@ -2075,10 +2209,14 @@ public class ChatActivity extends Activity {
     }
 
     private void abort() {
+        flushNow(); // 停止前把已收到的正文落屏
         suppressDone = true; // idle after interrupt must NOT show ✅
         stoppedManually = true;
         stoppedAwait = true;
         runningTools.clear();
+        liveToolNames.clear();
+        liveToolDetails.clear();
+        clearToolLinger();
         writingShown = false;
         refreshStatus(); // 立刻给"已发送停止"反馈，不等服务端 failed 事件
         new Thread(() -> {
@@ -2423,6 +2561,7 @@ public class ChatActivity extends Activity {
 
     private void makeCopyable(TextView tv) {
         tv.setOnLongClickListener(v -> {
+            lastLongPressAt = System.currentTimeMillis();
             try {
                 android.content.ClipboardManager cm =
                         (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -3042,13 +3181,62 @@ public class ChatActivity extends Activity {
                 }
                 case "session.reasoning.ended":
                     runOnUiThread(() -> {
+                        flushNow();
                         thinkingShown = false;
                         finishReasoning();
                         refreshStatus();
                     });
                     break;
+                case "session.text.ended":
+                    runOnUiThread(this::flushNow);
+                    break;
+                case "session.tool.input.started":
+                case "session.tool.called":
+                case "session.tool.progress": {
+                    // 0.21.9：V2 工具事件（实测 2.0.12）——input.started 带 name，
+                    // called 带 input，progress 只有 metadata。之前靠 3 秒轮询整包消息，
+                    // 现在直接事件更新，状态栏照样显示 "⚙️ 正在执行命令 · date"。
+                    final String tid = d.optString("id", "");
+                    if (tid.isEmpty()) break;
+                    final String tname = d.optString("name", "");
+                    final JSONObject tinput = d.optJSONObject("input");
+                    runOnUiThread(() -> {
+                        String nm = tname;
+                        if (!nm.isEmpty()) liveToolNames.put(tid, nm);
+                        else nm = liveToolNames.containsKey(tid) ? liveToolNames.get(tid) : "";
+                        // progress 事件没有 input：沿用 called 记下的细节，别把「· date」擦掉
+                        String det = tinput != null ? detailFromInput(nm, tinput) : "";
+                        if (!det.isEmpty()) liveToolDetails.put(tid, det);
+                        else if (liveToolDetails.containsKey(tid)) det = liveToolDetails.get(tid);
+                        cancelDone();
+                        clearToolLinger();
+                        writingShown = false;
+                        thinkingShown = false;
+                        runningTools.put(tid, friendlyToolText(nm, "", det));
+                        refreshStatus();
+                    });
+                    break;
+                }
+                case "session.tool.success":
+                case "session.tool.failed":
+                case "session.tool.error": {
+                    final String tid = d.optString("id", "");
+                    if (tid.isEmpty()) break;
+                    final boolean failed = !"session.tool.success".equals(type);
+                    runOnUiThread(() -> {
+                        runningTools.remove(tid);
+                        String det = liveToolDetails.get(tid);
+                        String done = (failed ? "❌ 工具失败" : "✅ 已完成")
+                                + (det == null || det.isEmpty() ? "" : " · " + det);
+                        showToolDone(done);
+                    });
+                    break;
+                }
                 case "session.execution.succeeded": {
-                    runOnUiThread(() -> onServerIdle());
+                    runOnUiThread(() -> {
+                        flushNow(); // 最后一截字别丢
+                        onServerIdle();
+                    });
                     break;
                 }
                 case "session.execution.failed": {
@@ -3060,7 +3248,11 @@ public class ChatActivity extends Activity {
                         suppressDone = true;
                         cancelDone();
                         retryText = null;
+                        flushNow();
                         runningTools.clear();
+                        liveToolNames.clear();
+                        liveToolDetails.clear();
+                        clearToolLinger();
                         writingShown = false;
                         stoppedAwait = false;
                         if (stoppedManually) {
@@ -3145,10 +3337,79 @@ public class ChatActivity extends Activity {
         scrollDown();
     }
 
+    // ---------- 流式节流（0.21.13） ----------
+    // 以前每个 text.delta / reasoning.delta 都 applyRichText 全文重建 Span + setText，
+    // 一条长回复是 O(n²)（几千个增量 × 上万字），是发热掉帧的主因。
+    // 现在增量立刻进 buffer，UI 每 100ms 合并刷一次；结束/完成事件强制 flush 兜底。
+    private final java.util.LinkedHashSet<String> dirtyParts = new java.util.LinkedHashSet<>();
+    private final java.util.LinkedHashSet<String> dirtyReasons = new java.util.LinkedHashSet<>();
+    private Runnable flushTask = null;
+    private static final long STREAM_FLUSH_MS = 100;
+    // 0.21.14：长按复制会同时触发链接点击（View 先处理 long-click，MovementMethod 再处理 UP），
+    // 记下长按时刻，链接点击在这个窗口内直接忽略。
+    private static volatile long lastLongPressAt = 0;
+
+    private void scheduleFlush() {
+        if (flushTask != null) return;
+        flushTask = () -> {
+            flushTask = null;
+            flushStreamingNow();
+        };
+        uiHandler.postDelayed(flushTask, STREAM_FLUSH_MS);
+    }
+
+    /** 把 buffer 里攒下的增量一次性写进视图（UI 线程）。 */
+    private void flushStreamingNow() {
+        boolean any = false;
+        if (!dirtyParts.isEmpty()) {
+            for (String pid : new java.util.ArrayList<>(dirtyParts)) {
+                TextView tv = partViews.get(pid);
+                StringBuilder sb = partBuf.get(pid);
+                if (tv != null && sb != null) {
+                    applyRichText(tv, sb.toString());
+                    any = true;
+                }
+            }
+            dirtyParts.clear();
+        }
+        if (!dirtyReasons.isEmpty()) {
+            for (String mid : new java.util.ArrayList<>(dirtyReasons)) {
+                ReasonBlock rb = reasonBlocks.get(mid);
+                if (rb != null && rb.content != null) {
+                    rb.content.setText(rb.buf.toString());
+                    any = true;
+                }
+            }
+            dirtyReasons.clear();
+        }
+        if (any) scrollDown();
+    }
+
+    /** 立刻刷（完成/结束/异常时用，别让最后一截字卡在 buffer 里）。 */
+    private void flushNow() {
+        if (flushTask != null) {
+            uiHandler.removeCallbacks(flushTask);
+            flushTask = null;
+        }
+        flushStreamingNow();
+    }
+
+    /** 丢弃待刷内容（重拉历史/销毁时用）。 */
+    private void dropPendingFlush() {
+        if (flushTask != null) {
+            uiHandler.removeCallbacks(flushTask);
+            flushTask = null;
+        }
+        dirtyParts.clear();
+        dirtyReasons.clear();
+    }
+
     private void appendDelta(String mid, String partID, String delta) {
         if (delta.isEmpty() || partID.isEmpty()) return;
+        boolean created = false;
         TextView tv = partViews.get(partID);
         if (tv == null) {
+            created = true;
             LinearLayout bubble = msgBubbles.get(mid);
             if (bubble == null) {
                 // new assistant bubble for streaming reply
@@ -3186,8 +3447,9 @@ public class ChatActivity extends Activity {
             partBuf.put(partID, sb);
         }
         sb.append(delta);
-        applyRichText(tv, sb.toString());
-        scrollDown();
+        dirtyParts.add(partID);
+        if (created) flushNow(); // 新气泡首字立即画，避免占位符移除后空白一瞬
+        else scheduleFlush();
     }
 
     private void setPartText(String mid, String partID, String full, boolean isText) {
@@ -3205,6 +3467,7 @@ public class ChatActivity extends Activity {
         }
         tv.setText(full);
         partBuf.put(partID, new StringBuilder(full));
+        dirtyParts.remove(partID);
         scrollDown();
     }
 
@@ -3256,8 +3519,12 @@ public class ChatActivity extends Activity {
     }
 
     private void applyRichText(TextView tv, String text) {
-        if (text == null || text.isEmpty() || !looksStructured(text)) {
-            tv.setText(text == null ? "" : text);
+        if (text == null || text.isEmpty()) {
+            tv.setText("");
+            return;
+        }
+        if (!looksStructured(text)) {
+            setLinkifiedText(tv, text);
             return;
         }
         android.text.SpannableString sp = new android.text.SpannableString(text);
@@ -3290,7 +3557,65 @@ public class ChatActivity extends Activity {
             i = nl + 1;
         }
         if (regionStart >= 0) applyMonoSpan(sp, regionStart, n); // 流式中未闭合的代码块也上等宽
-        tv.setText(sp);
+        setLinkifiedText(tv, sp);
+    }
+
+    /** 0.21.14：正文里的网址变蓝色可点，点开 App 内浏览器（长按复制不受影响）。 */
+    private void setLinkifiedText(TextView tv, CharSequence text) {
+        try {
+            android.text.SpannableStringBuilder sb = new android.text.SpannableStringBuilder(text);
+            if (android.text.util.Linkify.addLinks(sb, android.text.util.Linkify.WEB_URLS)) {
+                // 默认 URLSpan 会丢到系统浏览器；换成自己的 span，走 App 内浏览器
+                android.text.style.URLSpan[] spans = sb.getSpans(0, sb.length(),
+                        android.text.style.URLSpan.class);
+                for (android.text.style.URLSpan sp0 : spans) {
+                    int st = sb.getSpanStart(sp0);
+                    int en = sb.getSpanEnd(sp0);
+                    int fl = sb.getSpanFlags(sp0);
+                    String u = sp0.getURL();
+                    sb.removeSpan(sp0);
+                    if (st < 0 || en > sb.length() || u == null || u.isEmpty()) continue;
+                    sb.setSpan(new UrlClickSpan(u), st, en, fl);
+                }
+                tv.setMovementMethod(android.text.method.LinkMovementMethod.getInstance());
+                tv.setHighlightColor(Color.parseColor("#33000000"));
+            }
+            tv.setText(sb);
+        } catch (Exception e) {
+            tv.setText(text);
+        }
+    }
+
+    /** 网址点击：优先进 App 内浏览器（登录态/桥都在那边），失败退回系统浏览器。 */
+    static class UrlClickSpan extends android.text.style.ClickableSpan {
+        private final String url;
+
+        UrlClickSpan(String url) {
+            this.url = url;
+        }
+
+        @Override
+        public void onClick(View widget) {
+            if (System.currentTimeMillis() - lastLongPressAt < 900) return; // 刚长按复制，别跳走
+            try {
+                android.content.Intent it = new android.content.Intent(
+                        widget.getContext(), BrowserActivity.class);
+                it.putExtra("url", url);
+                widget.getContext().startActivity(it);
+            } catch (Exception e) {
+                try {
+                    widget.getContext().startActivity(new android.content.Intent(
+                            android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url)));
+                } catch (Exception ignored) {
+                }
+            }
+        }
+
+        @Override
+        public void updateDrawState(android.text.TextPaint ds) {
+            ds.setColor(Color.parseColor("#1565C0"));
+            ds.setUnderlineText(true);
+        }
     }
 
     /** 抽 ``` 代码块正文（去语言标识行）。未闭合的不算。 */
@@ -3617,8 +3942,9 @@ public class ChatActivity extends Activity {
             boolean expanded = content.getMaxLines() == Integer.MAX_VALUE;
             content.setMaxLines(expanded ? 6 : Integer.MAX_VALUE);
             content.setEllipsize(expanded ? android.text.TextUtils.TruncateAt.END : null);
-            header.setText(expanded ? "💭 思考过程（点开看全部）" : "💭 思考过程（点收起）");
+            setReasonHeader(header, content, true, !expanded);
         });
+        setReasonHeader(header, content, true, false);
         makeCopyable(content);
         bubble.addView(header);
         bubble.addView(content);
@@ -3644,14 +3970,31 @@ public class ChatActivity extends Activity {
         }
     }
 
+    /** done 且折叠时，内容没被截断就不写「点开看全部」（0.21.11：短思考也这么写很迷惑）。 */
+    private void setReasonHeader(final TextView header, final TextView content,
+                                 final boolean done, final boolean expanded) {
+        if (expanded) {
+            header.setText(done ? "💭 思考过程（点收起）" : "💭 思考中…（点收起）");
+            return;
+        }
+        if (!done) {
+            header.setText("💭 思考中…（点开看全部）");
+            return;
+        }
+        content.post(() -> {
+            try {
+                android.text.Layout l = content.getLayout();
+                boolean truncated = l != null && l.getLineCount() > content.getMaxLines();
+                header.setText(truncated ? "💭 思考过程（点开看全部）" : "💭 思考过程");
+            } catch (Exception ignored) {
+            }
+        });
+    }
+
     private void setReasonExpanded(ReasonBlock rb, boolean expanded) {
         rb.content.setMaxLines(expanded ? Integer.MAX_VALUE : 6);
         rb.content.setEllipsize(expanded ? null : android.text.TextUtils.TruncateAt.END);
-        if (expanded) {
-            rb.header.setText(rb.done ? "💭 思考过程（点收起）" : "💭 思考中…（点收起）");
-        } else {
-            rb.header.setText(rb.done ? "💭 思考过程（点开看全部）" : "💭 思考中…（点开看全部）");
-        }
+        setReasonHeader(rb.header, rb.content, rb.done, expanded);
     }
 
     /** 把一段 reasoning 增量追加进本消息的思考块（首次出现时建块）。 */
@@ -3685,9 +4028,9 @@ public class ChatActivity extends Activity {
         }
         if (delta != null && !delta.isEmpty()) {
             rb.buf.append(delta);
-            rb.content.setText(rb.buf.toString());
+            dirtyReasons.add(mid);
+            scheduleFlush();
         }
-        scrollDown();
     }
 
     private void finishReasoning() {
@@ -3695,7 +4038,7 @@ public class ChatActivity extends Activity {
             ReasonBlock rb = e.getValue();
             rb.done = true;
             boolean expanded = rb.content.getMaxLines() == Integer.MAX_VALUE;
-            rb.header.setText(expanded ? "💭 思考过程（点收起）" : "💭 思考过程（点开看全部）");
+            setReasonHeader(rb.header, rb.content, true, expanded);
         }
     }
 

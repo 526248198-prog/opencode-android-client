@@ -9,7 +9,7 @@
 - **会话列表**：新建 / 改名 / 删除 / 费用与 token；跑完叫你（通知 + `✅`/`⏳` 标记）
 - **聊天页**：流式正文、推理过程实时折叠显示、工具状态栏、权限审批条、提问表单、附件（图片压缩 / 文件）、停止、重试、本轮改动查看
 - **模型 / Agent / 思考深度** 三个下拉，进页即显示会话真实状态
-- **浏览器页 + 本机 HTTP 桥**：`127.0.0.1:4098`，让 AI 代读/代点网页（`/browser/status|text|open|eval`）
+- **浏览器页 + 本机 HTTP 桥**：`127.0.0.1:4098`，让 AI 代读/代点网页（`/browser/status|text|open|eval`）。0.21.8 起桥需鉴权：每次起桥随机生成 token 写到 `/sdcard/Download/opencode/bridge_token.txt`，请求带 `X-Bridge-Token`；带 `Origin` 的请求一律拒绝（防网页 CSRF）
 - 纯 Android SDK 构建，**零第三方依赖**（只用 `HttpURLConnection` + `org.json`），Java + 代码写 UI
 
 ## 跑起来需要什么

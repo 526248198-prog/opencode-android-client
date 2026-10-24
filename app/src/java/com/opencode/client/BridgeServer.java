@@ -18,17 +18,26 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * 0.18.0: AI 代操作网页・第2步——读桥。
- * 本机回环 HTTP 服务（手写 ServerSocket，零第三方），只绑 127.0.0.1:4098，
- * 随 BrowserActivity 生死（开页即起、关页即停，不常驻），AI 侧用 curl 调。
- * 端点（均为 GET）：
- *   /browser/status  -> {ok,bridge,url,title}
- *   /browser/text?max=N -> {ok,url,title,text}（document.body.innerText，截断）
+ * 本机回环 HTTP 服务（手写 ServerSocket，零第三方），只绑 127.0.0.1:4098。
+ * 0.21.8 起强制鉴权（防任意网页 CSRF / 本机乱调）：
+ *   - 每次启动生成随机 token，写 /sdcard/Download/opencode/bridge_token.txt 首行；
+ *   - 请求须带 `X-Bridge-Token: <token>`（或 query `?token=`），否则 401；
+ *   - 带 Origin 头一律 403（浏览器网页发起的请求必带，Termux curl 不带）；
+ *   - Host 必须是 127.0.0.1/localhost（防 DNS rebinding）。
+ * 端点：
+ *   GET  /browser/status  -> {ok,bridge,auth,url,title}
+ *   GET  /browser/text?max=N -> {ok,url,title,text}
+ *   POST /browser/open {"url"}  /  POST /browser/eval {"js"}
  * 注意：禁止匿名内部类（D8 坑），线程/回调一律 lambda/具名成员。
  */
 public class BridgeServer {
 
     static final int PORT = 4098;
-    static final String VERSION = "0.19.0";
+    static final String VERSION = "0.21.8";
+
+    /** 0.21.8 鉴权：随机 token（每次 start 轮换），内存 + 文件各一份。 */
+    private static volatile String token = "";
+    static volatile String tokenPath = "";
 
     /** 状态回调（具名接口）：监听中/失败/收到请求都经此报到 UI。 */
     interface Listener {
@@ -80,6 +89,9 @@ public class BridgeServer {
         }
         server = null;
         acceptThread = null;
+        // 0.21.8：停桥即作废 token 并删文件（AI 读不到文件=桥没开，避免拿旧 token 反复试）
+        token = "";
+        removeTokenFile();
     }
 
     /** 重进浏览器页：换绑新 Activity/WebView，socket 不动，不断线。 */
@@ -102,7 +114,8 @@ public class BridgeServer {
         try {
             server = new ServerSocket(PORT, 5, InetAddress.getByName("127.0.0.1"));
             bound = true;
-            note("桥：监听中 127.0.0.1:" + PORT);
+            newToken(); // 0.21.8：每次起桥轮换 token 并落盘，先备好凭证再对外服务
+            note("桥：监听中 127.0.0.1:" + PORT + "（token 校验已开）");
         } catch (Exception e) {
             bound = false;
             note("桥启动失败：" + e);
@@ -119,6 +132,72 @@ public class BridgeServer {
         }
     }
 
+    /** 生成 16 字节随机 token 并写盘（首行=token）。优先共享目录，失败退 App 私有目录。 */
+    private void newToken() {
+        String tk = "";
+        try {
+            java.security.SecureRandom rnd = new java.security.SecureRandom();
+            byte[] b = new byte[16];
+            rnd.nextBytes(b);
+            StringBuilder sb = new StringBuilder();
+            for (byte x : b) sb.append(String.format("%02x", x));
+            tk = sb.toString();
+        } catch (Exception e) {
+            tk = Long.toHexString(System.nanoTime()) + Long.toHexString(System.currentTimeMillis());
+        }
+        token = tk;
+        String path = null;
+        try {
+            java.io.File dir = new java.io.File(
+                    android.os.Environment.getExternalStorageDirectory(), "Download/opencode");
+            if (!dir.exists() && !dir.mkdirs() && !dir.exists()) throw new Exception("no dir");
+            java.io.File f = new java.io.File(dir, "bridge_token.txt");
+            writeFile(f, tk);
+            path = f.getAbsolutePath();
+        } catch (Exception e) {
+            try {
+                java.io.File f = new java.io.File(activity.getFilesDir(), "bridge_token.txt");
+                writeFile(f, tk);
+                path = f.getAbsolutePath();
+            } catch (Exception ignored) {
+            }
+        }
+        tokenPath = path == null ? "" : path;
+        if (path == null) note("桥：token 落盘失败，AI 无法连接（请检查存储权限）");
+    }
+
+    private static void writeFile(java.io.File f, String s) throws Exception {
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f, false)) {
+            fos.write((s + "\n").getBytes(StandardCharsets.UTF_8));
+        }
+    }
+
+    private void removeTokenFile() {
+        String p = tokenPath;
+        if (p == null || p.isEmpty()) return;
+        try { new java.io.File(p).delete(); } catch (Exception ignored) { }
+        tokenPath = "";
+    }
+
+    /** 常量时间比较，避免按字符试出 token。 */
+    private static boolean tokenOk(String given) {
+        String t = token;
+        if (t == null || t.isEmpty() || given == null) return false;
+        if (given.length() != t.length()) return false;
+        int diff = 0;
+        for (int i = 0; i < t.length(); i++) diff |= t.charAt(i) ^ given.charAt(i);
+        return diff == 0;
+    }
+
+    /** Host 只认回环（防 DNS rebinding）；空 Host 放行（兼容老客户端）。 */
+    private static boolean hostOk(String host) {
+        if (host == null) return true;
+        String h = host.trim().toLowerCase();
+        if (h.isEmpty()) return true;
+        return h.equals("127.0.0.1") || h.equals("127.0.0.1:" + PORT)
+                || h.equals("localhost") || h.equals("localhost:" + PORT);
+    }
+
     private void handle(Socket s) {
         try {
             try { s.setSoTimeout(8000); } catch (Exception ignored) { }
@@ -126,13 +205,25 @@ public class BridgeServer {
                     new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
             String req = r.readLine();
             int contentLength = 0;
+            String hOrigin = "";
+            String hHost = "";
+            String hToken = "";
             try {
                 String h;
                 while ((h = r.readLine()) != null && !h.isEmpty()) {
                     int c = h.indexOf(':');
-                    if (c > 0 && "content-length".equalsIgnoreCase(h.substring(0, c).trim())) {
-                        try { contentLength = Integer.parseInt(h.substring(c + 1).trim()); }
+                    if (c <= 0) continue;
+                    String name = h.substring(0, c).trim();
+                    String value = h.substring(c + 1).trim();
+                    if ("content-length".equalsIgnoreCase(name)) {
+                        try { contentLength = Integer.parseInt(value); }
                         catch (Exception ignored) { }
+                    } else if ("origin".equalsIgnoreCase(name)) {
+                        hOrigin = value;
+                    } else if ("host".equalsIgnoreCase(name)) {
+                        hHost = value;
+                    } else if ("x-bridge-token".equalsIgnoreCase(name)) {
+                        hToken = value;
                     }
                 }
             } catch (Exception ignored) {
@@ -146,12 +237,38 @@ public class BridgeServer {
             int q = path.indexOf('?');
             if (q >= 0) { query = path.substring(q + 1); path = path.substring(0, q); }
             note("收到 " + method + " " + path);
+            // ---- 0.21.8 鉴权三道闸 ----
+            if (!hostOk(hHost)) {
+                respond(s, 403, "Forbidden",
+                        new JSONObject().put("ok", false).put("error", "host not allowed"));
+                s.close();
+                return;
+            }
+            if (!hOrigin.isEmpty()) {
+                // 浏览器页面发起的请求必带 Origin（含本 App WebView 里的网页）：
+                // 一律拒绝，堵死「任何网页 CSRF 驱动登录态浏览器」这条路。
+                respond(s, 403, "Forbidden",
+                        new JSONObject().put("ok", false).put("error", "origin not allowed"));
+                s.close();
+                return;
+            }
+            String givenToken = hToken.isEmpty() ? queryParam(query, "token") : hToken;
+            if (!tokenOk(givenToken)) {
+                respond(s, 401, "Unauthorized",
+                        new JSONObject().put("ok", false)
+                                .put("error", "missing or invalid X-Bridge-Token")
+                                .put("tokenFile", tokenPath));
+                s.close();
+                return;
+            }
             String body = "";
             if ("POST".equals(method) && contentLength > 0) body = readBody(r, contentLength);
             if ("GET".equals(method) && "/browser/status".equals(path)) {
                 JSONObject o = new JSONObject();
                 o.put("ok", true);
                 o.put("bridge", VERSION);
+                o.put("auth", "token");
+                o.put("tokenFile", tokenPath);
                 o.put("url", uiStr(() -> safeCall(() -> web.getUrl())));
                 o.put("title", uiStr(() -> safeCall(() -> web.getTitle())));
                 respond(s, 200, "OK", o);

@@ -54,6 +54,18 @@ public class BrowserActivity extends Activity {
                 TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
     }
 
+    @Override
+    protected void onNewIntent(android.content.Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        // 0.21.14：聊天里点链接会带 url extra 再进来；常驻页不会重建，这里手动导航
+        try {
+            String u = intent != null ? intent.getStringExtra("url") : null;
+            if (u != null && !u.trim().isEmpty() && urlBox != null && web != null) go(u);
+        } catch (Exception ignored) {
+        }
+    }
+
     private void go(String raw) {
         String u = raw == null ? "" : raw.trim();
         if (u.isEmpty()) {
@@ -141,8 +153,8 @@ public class BrowserActivity extends Activity {
             live.attach(this, web);
         }
         bridge = live;
-        if (bridgeStatus != null) bridgeStatus.setText("桥：常驻中（关页不断）");
-        Toast.makeText(this, "AI 读桥已开：127.0.0.1:4098（关页即停）",
+        if (bridgeStatus != null) bridgeStatus.setText("桥：常驻中（已开 token 校验，关页不断）");
+        Toast.makeText(this, "AI 读桥已开：127.0.0.1:4098（需 token，见 Download/opencode/bridge_token.txt）",
                 Toast.LENGTH_LONG).show();
 
         // 底栏：后退 / 前进 / 刷新（大按钮，防误触）

@@ -430,10 +430,20 @@ public class MainActivity extends Activity {
         crashBtn.setText("🐞 查看崩溃日志");
         crashBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         crashBtn.setMinHeight(dp(48));
+        footRow2.setGravity(android.view.Gravity.CENTER_VERTICAL);
         footRow2.addView(crashBtn, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT, dp(48)));
+                0, dp(48), 1f));
         crashBtn.setVisibility(Button.GONE);
         crashBtn.setOnClickListener(v -> showCrashLog());
+
+        // 0.21.10：底部显示版本号，装没装上、装的是哪版一眼能看出来
+        TextView verTv = new TextView(this);
+        verTv.setText("v" + appVersionName());
+        verTv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        verTv.setTextColor(Color.parseColor("#999999"));
+        verTv.setPadding(dp(6), 0, dp(4), 0);
+        footRow2.addView(verTv, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT));
 
         setContentView(root);
         loadSessions();
@@ -633,6 +643,15 @@ public class MainActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    /** 0.21.10：读当前安装版本号，底部小字显示，便于确认「安装更新」是否真装上。 */
+    private String appVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "?";
+        }
     }
 
     private int dp(int v) {
