@@ -1547,10 +1547,12 @@ public class ChatActivity extends Activity {
                     msgBubbles.clear();
                     loadingEarlier = false;
                     // 只有真的取满一页才可能有更早（短会话直接不显示按钮）；
-                    // 整页时再用 limit=1 探针确认，避免最老一页还顶着一个点了回 0 条的按钮
-                    earlierCursor = null;
+                    // 整页时再用 limit=1 探针确认，避免最老一页还顶着一个点了回 0 条的按钮。
+                    // 0.22.2：这一步必须先把游标设上——0.21.12 只保留了「探针回空则清空」，
+                    // 却把赋值删了，导致游标恒为 null，按钮在全新加载后永远不出现（真机反馈丢历史）。
+                    earlierCursor = (fetched >= MSG_PAGE_SIZE && !nxt.isEmpty()) ? nxt : null;
                     final int pseq = ++earlierProbeSeq;
-                    if (fetched >= MSG_PAGE_SIZE && !nxt.isEmpty()) probeHasEarlier(nxt, pseq);
+                    if (earlierCursor != null) probeHasEarlier(earlierCursor, pseq);
                     refreshEarlierBtn();
                     for (JSONObject m : msgs) {
                         try {
