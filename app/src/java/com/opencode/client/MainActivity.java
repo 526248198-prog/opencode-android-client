@@ -282,8 +282,9 @@ public class MainActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(16);
-        root.setPadding(pad, dp(24), pad, pad);
+        root.setPadding(pad, dp(8), pad, dp(8));
         root.setBackgroundColor(Palette.pageBg());
+        Edge.apply(root); // 0.22.3：状态栏/导航栏内边距
 
         // 标题行：左标题，右配色切换（跟随系统 / 浅色 / 深色，点一下换一档）
         LinearLayout titleRow = new LinearLayout(this);

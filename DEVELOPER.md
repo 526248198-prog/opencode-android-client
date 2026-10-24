@@ -47,6 +47,7 @@
         ├── ChatActivity.java     # 聊天页
         ├── CrashLogger.java      # 进程级崩溃日志（0.21.0：闪退写 Download/opencode/crash-*.txt）
         ├── Palette.java          # 深色模式调色板（0.22.0：语义色 + 三态模式）
+        ├── Edge.java             # 系统栏/键盘内边距（0.22.3：edge-to-edge 适配）
         └── BrowserActivity.java  # 浏览器页（0.17.0；0.18.0 起带读桥）
         └── BridgeServer.java     # 读桥（0.18.0：127.0.0.1:4098，随浏览器页生死）```
 
@@ -126,7 +127,7 @@
 - 工具行可见性（0.21.10）：事件驱动后暴露一个反直觉问题——`date` 这类工具从 started 到 success 只有 **约 160ms**（实测抓包），横幅刚 setText 就被下一次 `refreshStatus()` 摘掉，肉眼完全看不见（真机反馈「没看到齿轮」；旧 3 秒轮询反而因为采样+滞留看起来"更明显"）。现加 `lingerToolText` + `lingerHideTask`：工具完成时横幅改写 `✅ 已完成 · 目标`（失败 `❌ 工具失败`）并保持 **1.5 秒**再清；新工具开始 / 新一发 / 完成对账都会 `clearToolLinger()`。`refreshStatus()` 取值顺序变为 `currentToolText()` → `lingerToolText`。
 - 版本号可见（0.21.10）：列表页底部第二行右侧常驻灰色小字 `v<versionName>`（`PackageManager.getPackageInfo`），用来一眼确认「安装更新」是否真装上——之前装没装、装的是哪版全凭感觉。
 - 草稿保存（0.21.9）：`input` 内容在 `onPause` 写 `SharedPreferences(opencode_drafts)` 键 `d_<sessionID>`，进页 `restoreDraft()` 回填并置光标到末尾；`send()` 发出后立即清该草稿（避免下次进来回填已发内容）。以前打一半切出去查资料，回来字全没了。
-- 键盘修复（Android 15 edge-to-edge 下 `adjustResize` 可能失效）：`getWindow().setSoftInputMode(ADJUST_RESIZE)` + API 30+ 用 `WindowInsets.Type.ime()` 高度给 root 加 bottom padding（resize 已生效时 inset 为 0，不会双重顶起）；输入框获焦延迟 300ms 滚到底。
+- 键盘修复（Android 15 edge-to-edge 下 `adjustResize` 可能失效）：`getWindow().setSoftInputMode(ADJUST_RESIZE)` + API 30+ 用 `WindowInsets.Type.ime()` 高度给 root 加 bottom padding（resize 已生效时 inset 为 0，不会双重顶起）；输入框获焦延迟 300ms 滚到底。**0.22.3 起统一并入 `Edge.apply(root, onImeOpen)`，同一处还补了状态栏 top 与导航栏 bottom，见 §3.5。**
 - 输入区尺寸约定：输入框 `minLines=3 maxLines=6`，按钮高 44dp、宽 ≥56dp、14sp（防误触下限，不再缩小；挤不出空间时砍按钮数量而不是缩小按钮——0.10.1 把停止移出底栏即此例）。
 - 可信运行状态（标题行 + 输入框上方固定横幅，同源显示，解决“长时间 AI 正在回复 不知道在干什么”）：
   - 状态机字段（全在 UI 线程读写，0.11.4 起 `session.status/error` 分支也在 `runOnUiThread` 内改状态：之前分支跑在 SSE 后台线程直接写状态调 `showDone()`，与 `setBusy` post 到主线程的 `refreshStatus()` 穿插，出现过横幅 `✅ 已完成`、标题行还停在“正在写回复”的打架）：`runningTools`（LinkedHashMap partID→人话，并行工具取最后一个）、`writingShown`、`doneShowing`（✅ 2 秒窗口，`Handler.postDelayed`，主线程定时器非新线程）、`suppressDone`（abort/error/发送失败后 idle 不许显示 ✅）。
@@ -173,6 +174,17 @@
 - **配色值（浅 → 深）**：`pageBg #F5F5F5→#0F1216`、`surface #FFFFFF→#1B2026`、`textPrimary #222222→#E6EAF0`、`textSecondary #666666→#B2BAC4`、`textMuted #999999→#8B939D`、`rowBg/codeBg #EEEEEE/#F0F0F0→#242A31`、`border #CCCCCC→#3B444E`、`userBubble #DCF8C6→#24402C`、`permBg #FFF3E0→#3A2E1D`、`questionBg #E3F2FD→#16293C`、`error #C62828→#FF7B72`、`okText #2E7D32→#7FD88F`、`interrupted #8D6E63→#C3A69B`、`accent #1976D2→#2F6FD0`、`link #1565C0→#6CB0FF`。
 - **已知限制**：① 主题在 Activity 创建时定死，深浅切换必须重建页面；② 网页暗化依赖 WebView 版本，效果不可控；③ 系统通知/系统弹窗由系统主题决定，App 改不了。
 - **易漏点（0.22.1 补）**：`Color.parseColor("#…")` 之外还有直接写 `0xFF…` 的 **int 字面量**——表格单元格底色 `0xFFEEEEEE / 0xFFFFFFFF`、行内代码 `BackgroundColorSpan(0xFFF2F2F2)`。0.22.0 只换了 `parseColor`，漏掉这两处，深色下变成「白底浅字」，表格整片像空的（真机截图）。查漏命令：`grep -n '0x[0-9A-Fa-f]\{8\}' *.java`（`Palette.onAccent()` 恒白除外）。
+
+- **易漏点（0.22.1 补）**：`Color.parseColor("#…")` 之外还有直接写 `0xFF…` 的 **int 字面量**——表格单元格底色 `0xFFEEEEEE / 0xFFFFFFFF`、行内代码 `BackgroundColorSpan(0xFFF2F2F2)`。0.22.0 只换了 `parseColor`，漏掉这两处，深色下变成「白底浅字」，表格整片像空的（真机截图）。查漏命令：`grep -n '0x[0-9A-Fa-f]\{8\}' *.java`（`Palette.onAccent()` 恒白除外）。
+
+### 3.5 Edge.java（系统栏内边距 / edge-to-edge，0.22.3）
+
+- **背景**：targetSdk 35 在 Android 15 上**强制 edge-to-edge**，窗口内容会画到状态栏、导航栏底下。本项目是纯代码布局，从未处理 insets——真机表现：聊天页标题「GitHub官方地址获取」被状态栏的时间和信号图标压住（截图实证），列表页靠 `dp(24)` 顶部 padding 碰巧躲过，底部输入栏也可能贴到导航条上。
+- **做法**：`Edge.apply(root[, onImeOpen])` 给根布局挂 `setOnApplyWindowInsetsListener`，把 `statusBars | displayCutout` 的 top 与 `navigationBars / ime` 取最大后的 bottom **加到原有 padding** 上（记住原值，避免每帧累加）。API < 30 直接 return：老系统默认 `fitsSystemWindows`，内容本来就在栏下方。
+- **不会双重留白**：Android 10–14 未强制 edge-to-edge 时，这些 inset 已被 decor 消费（读到 0），加 0 无副作用；键盘态若 `adjustResize` 已缩窗口，`ime` 也是 0（沿用 0.21.x 的判断）。
+- **接入点**：三个 Activity 的根布局各一行 `Edge.apply(root)`；`ChatActivity` 传 `onImeOpen = () -> scrollDown()`，键盘弹出时滚到底部（替代原来只处理 IME 的监听器）。`MainActivity` 顶部 padding 从 `dp(24)` 降到 `dp(8)`，其余交给 insets。
+- **取舍**：现在 padding 加在**根布局**上，所以状态栏那条带子显示的是页面底色（`pageBg`），不是顶栏颜色；要「顶栏颜色延伸到状态栏后面」得把 inset 加到顶栏自身并让顶栏背景铺到 y=0，改动更大，暂不做。
+- **验证**：Android 15 真机，聊天页标题不被时间/图标遮挡、输入框随手势条留白；键盘弹出时输入栏在键盘上方且不被二次顶起。
 
 ## 4. Server API 表（OpenCode 2.0.12 已核实，App 只连 V2）
 核实方式：`https://opencode.ai/v2/openapi.json`（117 接口，已存 `$PREFIX/tmp/v2-openapi.json` 即 `/data/data/com.termux/files/usr/tmp/v2-openapi.json`）+ 本机 `2.0.12` 实测（4097 端口测试会话，事后已删）。**全部要 Basic 鉴权**（`opencode:<密码>`，密码来源见第 1 节），**全部包 `{data}` 信封**（列表另有 `cursor` 分页）。V1 表（`1.18.29`）已退役，见 git 历史。
@@ -248,6 +260,7 @@ SSE 事件 `type`（`data` 内含 `sessionID`）：`server.connected` / `session
 → 64=0.22.0 深色模式（三态：跟随系统 / 浅色 / 深色）。新增 `Palette.java`：23 个语义色 + 浅/深两套值，三个 Activity 的 68 处写死颜色全部换掉（`ChatActivity` 59、`MainActivity` 5、`BrowserActivity` 4）；`Palette.apply()` 切框架主题（`Theme_Material[_Light]_NoActionBar`），让 AlertDialog / Spinner 弹层 / EditText / Button 跟着变，并处理窗口底色与状态栏图标明暗；列表页标题行右侧加切换钮（文案即当前档）+ `recreate()`；新增 static `RowAdapter` 给列表项显式文字色（`simple_list_item_1` 的颜色来自主题，深色下会看不清）；`BrowserActivity` 记 `themeGen`，`onResume` 发现变档就 `recreate()`（常驻页不重建会黑底浅控件，cookie 在磁盘不掉登录），并尽力把网页暗化（33+ `setAlgorithmicDarkeningAllowed` / 29–32 `setForceDark`）；`versionCode 68`）。
 → 65=0.22.1 修深色模式表格不可见（0.22.0 只替换了 `Color.parseColor`，漏掉直接写 int 的两处色值：表格单元格 `0xFFEEEEEE/0xFFFFFFFF`、行内代码 `BackgroundColorSpan(0xFFF2F2F2)`；深色下白底配浅字，整张表看着是空的。现改走 `Palette.rowBg()/surface()/codeBg()`；`versionCode 69`）。
 → 66=0.22.2 修「⬆ 加载更早记录」按钮永不出现（0.21.12 加 `?limit=1` 探针时误删了 `earlierCursor = nxt` 赋值，只剩「回空则清空」分支，游标恒 null；长会话超过 50 条就只剩后半段，看着像丢了历史。现 `loadHistory()` 先按「取满一页 && next 非空」设游标，再发探针做最后收敛；`versionCode 70`）。
+→ 67=0.22.3 修状态栏压住顶栏（targetSdk 35 在 Android 15 强制 edge-to-edge，本项目纯代码布局从未处理 insets，聊天页标题被状态栏时间/图标遮挡——真机截图实证）。新增 `Edge.java`：`Edge.apply(root[, onImeOpen])` 把 `statusBars|displayCutout` 的 top、`navigationBars/ime` 取最大后的 bottom 加到原 padding 上，三个 Activity 各接一行；`ChatActivity` 的键盘滚动改用同一监听器（删掉旧的纯 IME 监听）；`MainActivity` 顶部 padding 24dp→8dp 交给 insets；API<30 直接跳过，未强制 edge-to-edge 的机型 inset 为 0 不会双重留白；`versionCode 71`）。
 → 62=0.21.14 正文链接可点（`applyRichText` 出口统一走 `setLinkifiedText`：Linkify WEB_URLS + 自定义 `UrlClickSpan` 打开 App 内浏览器，失败退回系统；`LinkMovementMethod` + 蓝字下划线；长按复制与点击同时触发的老问题用 `lastLongPressAt` 900ms 抑制；`BrowserActivity.onNewIntent` 支持常驻页二次导航；`versionCode 66`）。
 - **环境**：`~/android-sdk`（platforms `android-33/35`、build-tools `34.0.4`）、`gradle` 仅备用（本项目不用）、JDK 21（`javac --release 17`）。
 

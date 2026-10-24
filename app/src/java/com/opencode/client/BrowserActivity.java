@@ -90,6 +90,7 @@ public class BrowserActivity extends Activity {
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Palette.pageBg());
+        Edge.apply(root); // 0.22.3：状态栏/导航栏内边距
 
         // 顶栏：返回 + 地址栏 + 前往
         LinearLayout top = new LinearLayout(this);

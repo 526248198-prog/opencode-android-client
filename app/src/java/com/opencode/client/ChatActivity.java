@@ -6,7 +6,6 @@ import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
-import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
@@ -587,23 +586,9 @@ public class ChatActivity extends Activity {
         bottom.addView(sendBtn, sendLp);
         sendBtn.setOnClickListener(v -> send());
 
-        // keyboard fix for Android 15 edge-to-edge: when the system does not
-        // resize the window, pad the root by the IME height so the input bar
-        // stays above the keyboard. When resize already works the inset is 0.
-        if (android.os.Build.VERSION.SDK_INT >= 30) {
-            root.setOnApplyWindowInsetsListener((v, insets) -> {
-                int ime = 0;
-                try {
-                    ime = insets.getInsets(WindowInsets.Type.ime()).bottom;
-                } catch (Exception ignored) {
-                }
-                if (v.getPaddingBottom() != ime) {
-                    v.setPadding(v.getPaddingLeft(), v.getPaddingTop(), v.getPaddingRight(), ime);
-                    if (ime > 0) scrollDown();
-                }
-                return insets;
-            });
-        }
+        // 0.22.3：状态栏/导航栏/键盘统一走 insets（Android 15 强制 edge-to-edge，
+        // 之前顶栏被状态栏压住，键盘态也要让输入栏浮在键盘上方）。
+        Edge.apply(root, () -> scrollDown());
 
         setContentView(root);
         restoreDraft(); // 0.21.9：上次切走前打了一半的内容回填
