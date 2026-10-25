@@ -312,6 +312,18 @@ public class ChatActivity extends Activity {
         LinearLayout.LayoutParams mLp = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
         mLp.leftMargin = dp(8);
         modelRow.addView(modelSpinner, mLp);
+        // 0.22.8：开放 openrouter 后模型上百个，Spinner 里翻找太痛苦，右侧加搜索入口。
+        Button modelSearchBtn = new Button(this);
+        modelSearchBtn.setText("🔍");
+        modelSearchBtn.setContentDescription("搜索模型");
+        modelSearchBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        modelSearchBtn.setMinHeight(dp(44));
+        modelSearchBtn.setMinimumWidth(dp(44));
+        modelSearchBtn.setPadding(dp(6), 0, dp(6), 0);
+        LinearLayout.LayoutParams mslp = new LinearLayout.LayoutParams(dp(48), dp(44));
+        mslp.leftMargin = dp(4);
+        modelRow.addView(modelSearchBtn, mslp);
+        modelSearchBtn.setOnClickListener(v -> showModelSearchDialog());
         // 换模型即重建思考档位（0.20.0）：档位跟模型走，换完默认回落"默认"。
         // 监听器必须是 static 具名内部类（D8 8.2.2-dev 遇匿名/非静态内部类会 NPE 崩溃，见 DEVELOPER.md）。
         modelSpinner.setOnItemSelectedListener(new ModelSelectListener(this));
@@ -2387,7 +2399,7 @@ public class ChatActivity extends Activity {
                 final java.util.ArrayList<String> pids = new java.util.ArrayList<>();
                 final java.util.ArrayList<String> mids = new java.util.ArrayList<>();
                 // 思考档位表（0.20.0）：所有模型（含收费/openrouter）的 variants[]，按 providerID+id 建键。
-                // 会话当前模型若不在免费列表里，也能显示并切换它的档位。
+                // 会话当前模型若不在下拉列表里，也能显示并切换它的档位。
                 final java.util.HashMap<String, java.util.ArrayList<String>> vs =
                         new java.util.HashMap<>();
                 for (int i = 0; i < models.length(); i++) {
@@ -2405,26 +2417,38 @@ public class ChatActivity extends Activity {
                     }
                     if (!vlist.isEmpty()) vs.put(variantKey(p, midKey), vlist);
                 }
-                // only opencode free models: providerID==opencode + cost all zero.
-                // Paid models and other providers (openrouter etc.) are intentionally hidden.
-                java.util.ArrayList<JSONObject> free = new java.util.ArrayList<>();
+                // 0.22.8：不再只留 opencode 免费模型。opencode 仍只显示免费（免得误点收费），
+                // 其他 provider（openrouter 等）全部显示——免费额度不够时用户要能切过去。
+                // 标签前加 🆓/💳，一眼区分是否收费；模型太多靠右侧 🔍 搜索（showModelSearchDialog）。
+                java.util.ArrayList<JSONObject> shown = new java.util.ArrayList<>();
                 for (int i = 0; i < models.length(); i++) {
                     JSONObject m = models.optJSONObject(i);
                     if (m == null) continue;
-                    if (!"opencode".equals(m.optString("providerID", ""))) continue;
+                    String p = m.optString("providerID", "");
                     String mid = m.optString("modelID", "");
-                    if (mid.isEmpty()) continue;
-                    if (!isFreeModel(m)) continue;
-                    free.add(m);
+                    if (p.isEmpty() || mid.isEmpty()) continue;
+                    if ("opencode".equals(p) && !isFreeModel(m)) continue;
+                    shown.add(m);
                 }
-                free.sort((a, b) -> a.optString("modelID", "")
-                        .compareTo(b.optString("modelID", "")));
-                for (JSONObject m : free) {
-                    String pid = "opencode";
+                shown.sort((a, b) -> {
+                    String pa = a.optString("providerID", "");
+                    String pb = b.optString("providerID", "");
+                    boolean oa = "opencode".equals(pa);
+                    boolean ob = "opencode".equals(pb);
+                    if (oa != ob) return oa ? -1 : 1; // opencode 免费在前
+                    int pc = pa.compareTo(pb);
+                    if (pc != 0) return pc;
+                    boolean fa = isFreeModel(a);
+                    boolean fb = isFreeModel(b);
+                    if (fa != fb) return fa ? -1 : 1; // 同 provider 内免费在前
+                    return a.optString("modelID", "").compareTo(b.optString("modelID", ""));
+                });
+                for (JSONObject m : shown) {
+                    String pid = m.optString("providerID", "");
                     String mid = m.optString("modelID", "");
                     String fid = m.optString("id", mid);
                     if (fid.isEmpty()) continue;
-                    names.add(pid + "/" + mid);
+                    names.add((isFreeModel(m) ? "🆓 " : "💳 ") + pid + "/" + mid);
                     pids.add(pid);
                     mids.add(fid);
                 }
@@ -2500,6 +2524,103 @@ public class ChatActivity extends Activity {
     }
 
     // ---------- 模型 / Agent / 思考档位 初始值 ----------
+
+    /**
+     * 0.22.8：模型搜索对话框。放开 openrouter 后 Spinner 动辄上百项，单纯点选翻不动。
+     * 一个输入框 + 过滤后的 ListView；选中即同步 Spinner（后续发送逻辑完全复用）。
+     */
+    private void showModelSearchDialog() {
+        if (modelNames.isEmpty()) {
+            Toast.makeText(this, "模型还没加载好，稍后再试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(12), dp(8), dp(12), dp(4));
+
+        EditText query = new EditText(this);
+        query.setHint("搜索模型名 / 提供方");
+        query.setSingleLine(true);
+        query.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        box.addView(query);
+
+        final java.util.ArrayList<Integer> hits = new java.util.ArrayList<>();
+        final ArrayAdapter<String> ad = new ArrayAdapter<>(this,
+                android.R.layout.simple_list_item_1, new java.util.ArrayList<String>());
+        android.widget.ListView list = new android.widget.ListView(this);
+        list.setAdapter(ad);
+        box.addView(list, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(360)));
+
+        final android.app.AlertDialog dlg = new android.app.AlertDialog.Builder(this)
+                .setTitle("选择模型（共 " + modelNames.size() + " 个）")
+                .setView(box)
+                .setNegativeButton("取消", null)
+                .create();
+        fillModelSearch("", hits, ad);
+        list.setOnItemClickListener(new ModelPickListener(this, hits, dlg));
+        query.addTextChangedListener(new ModelSearchWatcher(this, hits, ad));
+        dlg.show();
+    }
+
+    /** 搜索对话框的过滤逻辑：关键字为空显示全部；否则按标签（含 provider）不区分大小写包含匹配。 */
+    private void fillModelSearch(String query,
+                                 java.util.ArrayList<Integer> hits,
+                                 ArrayAdapter<String> ad) {
+        String q = query == null ? "" : query.trim().toLowerCase(java.util.Locale.ROOT);
+        hits.clear();
+        java.util.ArrayList<String> labels = new java.util.ArrayList<>();
+        for (int i = 0; i < modelNames.size(); i++) {
+            String name = modelNames.get(i);
+            if (name == null) continue;
+            if (q.isEmpty() || name.toLowerCase(java.util.Locale.ROOT).contains(q)) {
+                hits.add(i);
+                labels.add(name);
+            }
+        }
+        ad.clear();
+        ad.addAll(labels);
+        ad.notifyDataSetChanged();
+    }
+
+    /** 搜索输入监听。必须 static 具名类（D8 8.2.2-dev 坑，见 DEVELOPER.md）。 */
+    private static class ModelSearchWatcher implements android.text.TextWatcher {
+        private final ChatActivity act;
+        private final java.util.ArrayList<Integer> hits;
+        private final ArrayAdapter<String> ad;
+        ModelSearchWatcher(ChatActivity a, java.util.ArrayList<Integer> h, ArrayAdapter<String> d) {
+            act = a;
+            hits = h;
+            ad = d;
+        }
+        @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) {
+        }
+        @Override public void onTextChanged(CharSequence s, int start, int before, int count) {
+        }
+        @Override public void afterTextChanged(android.text.Editable s) {
+            act.fillModelSearch(s == null ? "" : s.toString(), hits, ad);
+        }
+    }
+
+    /** 搜索结果点击：把 Spinner 选中项挪到对应真实下标，再关掉对话框。 */
+    private static class ModelPickListener
+            implements android.widget.AdapterView.OnItemClickListener {
+        private final ChatActivity act;
+        private final java.util.ArrayList<Integer> hits;
+        private final android.app.AlertDialog dlg;
+        ModelPickListener(ChatActivity a, java.util.ArrayList<Integer> h,
+                          android.app.AlertDialog d) {
+            act = a;
+            hits = h;
+            dlg = d;
+        }
+        @Override public void onItemClick(android.widget.AdapterView<?> parent,
+                                          View view, int position, long id) {
+            if (position < 0 || position >= hits.size()) return;
+            act.modelSpinner.setSelection(hits.get(position));
+            dlg.dismiss();
+        }
+    }
 
     /** 模型下拉联动：换模型 → 重建思考档位。static 具名内部类
      *  （D8 8.2.2-dev 对匿名/非静态内部类会 NPE 崩溃，见 DEVELOPER.md；static 无 this$0 合成字段）。 */
@@ -2591,7 +2712,7 @@ public class ChatActivity extends Activity {
         if (!modelsLoaded || !agentsLoaded || !sessionMetaFetched) return;
         metaApplied = true;
 
-        // 模型：未知 → 占位；已知但不在免费列表 → 插到最前显示真实身份。
+        // 模型：未知 → 占位；已知但不在可显示列表 → 插到最前显示真实身份。
         suppressModelEvents = true;
         if (sessionModelID == null || sessionModelID.isEmpty()) {
             modelNames.add(0, "（未设置）");
