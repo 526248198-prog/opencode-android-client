@@ -1028,7 +1028,7 @@ public class ChatActivity extends Activity {
         if (connTrouble) {
             // 0.22.10：服务器/网络暂时无响应时明确说出来（以前失败后界面照常「空闲」，
             // 看起来像没断），自动重试成功后由 markServerOk() 清掉。
-            String s = "⚠️ 服务器暂时无响应，正在自动重试…";
+            String s = "⚠️ 服务器暂时无响应（Termux 可能被后台冻结）\n正在自动重试…";
             statusBanner.setVisibility(LinearLayout.VISIBLE);
             statusText.setText(s);
             statusView.setText(s);

@@ -810,7 +810,8 @@ public class MainActivity extends Activity {
                         };
                         doneHandler.postDelayed(sessionsRetryTask, 3000);
                     } else {
-                        statusView.setText("加载失败：" + e.getMessage() + "，请确认服务器开着");
+                        statusView.setText("加载失败：" + e.getMessage()
+                                + "，请确认服务器开着；若 Termux 在后台，切过去唤醒一下");
                     }
                 });
             }
