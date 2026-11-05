@@ -29,6 +29,8 @@
 | Android SDK | `build-tools 34.0.4` + `platforms android-35`（编译）/ `android-33`（链接） | `35.0.1` 的 `aapt2` 在本机报 `Exec format error`，只能用 `34.0.4` |
 | JDK | 21（`javac --release 17`） | 见第 5 节 |
 | 手机 | Android 8.0+（minSdk 26，targetSdk 35） | WebView 需为系统/Chrome 提供方 |
+
+**Termux 后台保活（必读，0.22.10 真机教训）**：`opencode serve` 跑在 Termux 进程里，vivo/OriginOS 这类系统会在 Termux 切后台后降频甚至冻结它（再叠 proot 重任务时尤其明显）。表现：App 发请求 8~60 秒无响应，切到 Termux 前台马上恢复，所以看起来像「App 断线，必须重启」。服务端侧必须做：① 启动前 `termux-wake-lock`（0.22.10 起 App 的「复制指令」已带）；② 系统设置 → 电池 → 给 Termux 关电池优化/允许后台高耗电活动；③ 最近任务里给 Termux 加锁（若系统支持）。App 侧只能做「失败自动重试 + 重连 + 明确提示」，叫不醒被系统冻结的进程。
 - **用户语言**：全部中文 UI。
 
 ## 2. 目录结构
@@ -47,6 +49,7 @@
         ├── ChatActivity.java     # 聊天页
         ├── WatchService.java     # 0.22.6：前台 Service 兜底（跑完叫你，App 被杀后仍提醒）
         ├── CrashLogger.java      # 进程级崩溃日志（0.21.0：闪退写 Download/opencode/crash-*.txt）
+        ├── AppLog.java           # 运行日志（0.22.10：断线/重连/请求失败写 Download/opencode/app.log）
         ├── Palette.java          # 深色模式调色板（0.22.0：语义色 + 三态模式）
         ├── Edge.java             # 系统栏/键盘内边距（0.22.3：edge-to-edge 适配）
         └── BrowserActivity.java  # 浏览器页（0.17.0；0.18.0 起带读桥）
@@ -56,7 +59,7 @@
 
 ### 3.1 MainActivity.java（会话列表页）
 
-- `BASE_URL = http://127.0.0.1:4097`，`SERVE_CMD = OPENCODE_SERVER_PASSWORD=<密码> opencode serve --hostname 127.0.0.1 --port 4097 --print-logs`。密码来自 `loadServerPassword()`：读 `/sdcard/Download/opencode/server_password.txt` 首行，读不到回落占位符 `YOUR_SERVER_PASSWORD`（0.21.6 起，公开仓库不带真实密码）。所有请求带 `MainActivity.auth()`（HTTP Basic `opencode:<密码>`，`android.util.Base64`，零第三方）。
+- `BASE_URL = http://127.0.0.1:4097`，`SERVE_CMD = termux-wake-lock; OPENCODE_SERVER_PASSWORD=<密码> opencode serve --hostname 127.0.0.1 --port 4097 --print-logs`（0.22.10 起前面带 `termux-wake-lock`，尽量阻止系统把 Termux 降频/冻结）。密码来自 `loadServerPassword()`：读 `/sdcard/Download/opencode/server_password.txt` 首行，读不到回落占位符 `YOUR_SERVER_PASSWORD`（0.21.6 起，公开仓库不带真实密码）。所有请求带 `MainActivity.auth()`（HTTP Basic `opencode:<密码>`，`android.util.Base64`，零第三方）。
 - **短请求禁用 keep-alive（0.22.9）**：`auth()` 里统一给每条短请求加 `Connection: close`。根因（OpenCode 2.1.4 实测）：服务端空闲约 **6 秒**就静默关闭 keep-alive 连接（原始 socket 探针 FIN @6.03s），但 Android `HttpURLConnection` 连接池仍会把死连接交给下一个请求，一直卡到 8 秒读超时才失败，而 `SocketTimeoutException` 在请求已发出后不会被自动重试——于是「隔一会儿再操作就连不上，重启 App 清空连接池才恢复」。回环重建连接几乎无成本，直接让服务端回完就关。唯一例外是聊天页 SSE：`ChatActivity.startSse()` 在 `auth()` 之后显式改回 `Connection: keep-alive`，否则长连接会被关。排查脚本：Termux 里 `curl -v` 或 raw socket 发两次 `GET /api/info`，中间 `sleep 8`，第二次若读到 EOF 即为此问题。
 
 - 启动即 `GET /api/session` 拉列表（`{data:[Session.Info]}` 解包，默认 50 条），行显示同前；`model` 字段 V2 为 `{providerID,modelID}`（无 `id` 时拼 `provider/model`）。
@@ -106,6 +109,14 @@
   - V1 已删：`message.part.delta/updated`、`session.status/retry/idle`、`session.error`、`todo.updated`、`question.*` 精确 case。
   - 工具行现状（0.21.9 已定）：运行中改由 `session.tool.*` 事件实时驱动 `runningTools`（started 带 name、called 带 input、progress 带 metadata，success/failed/error 摘状态；`input.started` 不是完成标志），不再每 3 秒拉 `/message` 整包；完成后仍由 `loadHistory()` 全量重拉补齐历史工具行（`renderV2Message` + `toolLine`，按 V2 实测读 `name`）。
 - 断线重连补漏（0.21.15）：老逻辑有两个硬伤。① `setReadTimeout(0)` 无限等——切网/休眠后 TCP 静默死掉时 `readLine()` 永远不返回，既不弹「事件断开」也不重连（实测服务端**每 15 秒**发一条 `: heartbeat` 注释行，故改为 `setReadTimeout(60000)`，60 秒一行都没有即抛 `SocketTimeoutException` 走原有 3 秒重连）；② 重连成功只 `pollSessionStatus()` 把 `busy` 补回来，**断线期间生成的正文没人补**，要等整轮跑完才对齐。现重连时 `pollSessionStatus(true)`：会话仍活动 → `loadHistory()` 按服务端重建（滚动位置照旧保留）；已空闲 → 原有 `onServerIdle()`。另 `lastSseLineAt` 记录任意一行（**心跳注释也算**），`onResume()` 时若超过 25 秒没吃到一个字节（后台被杀事件流但 socket 假活），同样补一次 `loadHistory()` + 对账（首次进页 `lastSseLineAt==0` 跳过，避免和 `onCreate` 的 `loadHistory()` 重复拉）。
+- 自动恢复 + 断线可见（0.22.10，真机反馈「Termux 跑长任务时断了但不显示，再发消息模型/Agent 空白，必须重启 App」）：根因有两层。① 服务端在 Termux 里，vivo 等系统会把后台 Termux 降频/冻结（尤其再叠一个 proot 重任务时），`opencode serve` 几分钟不响应；App 进页那批 `loadModels`/`loadAgents`/`loadSessionMeta`/`loadHistory` **失败一次就放弃**（旧代码还把 `modelsLoaded/agentsLoaded/sessionMetaFetched` 置 true），于是模型/Agent 永久空白，只能重启。② 请求失败时界面照常显示「空闲」，用户不知道断了。现：
+  - 四个进页请求失败**不再置 loaded**，走 `scheduleDataRetry()`：5 秒起指数退避（上限 30 秒）持续重试，直到成功或页面销毁；成功后才 `applySessionMeta()`。`applySessionMeta(force)` 支持恢复后重新应用，`removeMetaPlaceholders()` 先清掉旧占位防重复。
+  - 任何请求失败 → `connTrouble=true`，`refreshStatus()` 优先显示「⚠️ 服务器暂时无响应，正在自动重试…」；任意请求成功 → `markServerOk()` 清掉。SSE 断开超过 10 秒同样置 `connTrouble`（不再「断了但界面空闲」）。
+  - `onResume()` 发现 25 秒没心跳时主动 `sseConn.disconnect()` 打断阻塞读、立即重连（不用等 60 秒读超时），并补拉缺失的模型/Agent/会话状态/历史。
+  - SSE 重连成功且数据仍缺 → 再触发 `scheduleDataRetry()`；`AppLog` 把「SSE 断开/重连成功/loadX 失败」写入 `/sdcard/Download/opencode/app.log`（1MB 滚动），Termux 可直接 `tail` 排障。
+  - 列表页 `loadSessions()` 失败也自动重试（3 秒间隔，最多 4 次，`onPause` 取消）。
+  - 服务端侧仍建议：Termux 执行 `termux-wake-lock`（0.22.10 起「复制指令」已自动带上）、系统设置里给 Termux 关电池优化/允许后台活动；否则 App 只能等 Termux 被唤醒后自动恢复，无法叫醒被冻结的进程。
+
 - 重拉历史后的增量去重（0.21.15）：`session.text.delta` 只带 `assistantMessageID`（无 partID），流式一律以 `messageID` 为键存 `partViews/partBuf`；而 `GET /api/session/:id/message` 的 `content[]` **实测没有 `id`**，历史渲染只能用 `mid#index` 兜底。两边键对不上 → 重拉历史后迟到的增量找不到视图，会在气泡末尾**另起一个 TextView 只写尾巴**（表现为同一段话重复一截）。现 `addPartView()` 额外把本条消息**最后一个 text 视图**登记一条 `mid` 别名（`partViews`/`partBuf` 同键，buffer 用已渲染全文播种），重拉后增量接着往下写；`addCollapsedReasoning()` 同样按 `mid` 登记 `ReasonBlock`（`buf` 播种历史思考、`done=true`），迟到的 `reasoning.delta` 接在后面而不是再开一个「思考中…」块。
 - 防丢 idle：`lastEventAt` + `busy` 30s 无事件 → 轮询 `GET /api/session/active`（`{data:{sid:…}}`，sid **不在表里即 idle**，替代已消失的 V1 `GET /session/status` 全量表）；SSE 重连成功同样对账。`applyPolledStatus`（busy/retry 三态机）已删，`retryText` 字段保留待 V2 retry 语义明确后再接。
 - 模型搜索（0.22.8）：放开 openrouter 后下拉上百项，Spinner 里翻找太痛苦。模型行右侧加 `🔍` 按钮（44dp×48dp，`contentDescription="搜索模型"`），点开 `AlertDialog`：顶部输入框 + 下方 `ListView`（高 360dp）。输入即时过滤（`ModelSearchWatcher`，标签含 provider 名，不区分大小写），点结果把 `modelSpinner.setSelection(真实下标)` 后关框——发送/档位逻辑完全复用原下拉。模型未加载时按钮只弹「模型还没加载好」。对话框/列表文字色跟随 `Palette.apply()` 的主题；`ModelSearchWatcher` / `ModelPickListener` 均为 **static 具名类**（D8 坑见 3.1）。
@@ -273,6 +284,7 @@ SSE 事件 `type`（`data` 内含 `sessionID`）：`server.connected` / `session
 → 75=0.22.7 WatchService 排障日志（真机反馈划掉 App 后跑完收不到通知；`WatchService.log()` 往 `/sdcard/Download/opencode/watch.log` 追加时间戳事件：ensure 起没起 / startForeground 成败 / 每轮轮询结果 / 通知 / onDestroy，便于对账断在哪一环；`versionCode 75`）。
 → 76=0.22.8 开放 openrouter 模型 + 模型搜索（0.22.7 之后模型仍只显示 opencode 免费，免费额度不够没法切。① `loadModels()` 改为「opencode 只留免费、其他 provider 全显示」，排序 opencode→其他、各 provider 内免费优先、再按 `modelID`，标签加 🆓/💳；② 模型行右侧加 🔍 搜索按钮，`AlertDialog` 输入框 + `ListView` 即时过滤（匹配模型名/提供方），点选同步 Spinner，发送与思考档位逻辑复用原下拉；`ModelSearchWatcher`/`ModelPickListener` 均 static 具名类守 D8；③ 清理上一轮误加的聊天页底栏「📦 安装更新」按钮（它挤压输入框、破坏原 UI；安装入口仍只在列表页）与 `installUpdate` 的 static 化回退；`versionCode 76`）。
 → 77=0.22.9 修「隔一会儿就连不上，必须重启 App」（用户反馈 OpenCode 升级后常见）。真机 + raw socket 实测：OpenCode 2.1.4 服务端空闲约 **6 秒**就静默 FIN 掉 keep-alive 连接，而 Android `HttpURLConnection` 连接池仍复用这条死连接，请求要卡满 8 秒读超时才报错；`SocketTimeoutException` 在请求已发出后不会自动重试，于是低频操作（列表刷新、15 秒轮询、发消息）几乎每次都失败，重启 App 清空连接池只是暂时恢复。修法：`MainActivity.auth()` 统一给所有短请求加 `Connection: close`（服务端回包也带 `Connection: close`，客户端不再入池），唯一例外是聊天页 SSE，`startSse()` 里 `auth()` 之后显式改回 `Connection: keep-alive` 保住长连接；`versionCode 77`）。
+→ 78=0.22.10 修「Termux 被系统冻结/降频后，断线不显示、模型和 Agent 永久空白，必须重启 App」。根因两层：① `loadModels/loadAgents/loadSessionMeta/loadHistory` 失败一次就放弃且把 loaded 置 true，服务器恢复后也不会再拉；② 请求失败时界面仍显示「空闲」，用户不知道已断。现失败不置位、5 秒起指数退避自动重试（上限 30 秒），成功才应用会话模型/Agent（`applySessionMeta(force)` + 清旧占位）；任何请求失败显示「⚠️ 服务器暂时无响应，正在自动重试…」，SSE 断开超 10 秒也显示；`onResume` 超 25 秒无心跳直接 `sseConn.disconnect()` 立即重连并补拉缺失数据；列表页加载失败 3 秒 × 4 次自动重试；新增 `AppLog` 写 `/sdcard/Download/opencode/app.log`；`SERVE_CMD` 前加 `termux-wake-lock`。服务端侧仍需给 Termux 关电池优化/允许后台活动；`versionCode 78`）。
 
 → 62=0.21.14 正文链接可点（`applyRichText` 出口统一走 `setLinkifiedText`：Linkify WEB_URLS + 自定义 `UrlClickSpan` 打开 App 内浏览器，失败退回系统；`LinkMovementMethod` + 蓝字下划线；长按复制与点击同时触发的老问题用 `lastLongPressAt` 900ms 抑制；`BrowserActivity.onNewIntent` 支持常驻页二次导航；`versionCode 66`）。
 - **环境**：`~/android-sdk`（platforms `android-33/35`、build-tools `34.0.4`）、`gradle` 仅备用（本项目不用）、JDK 21（`javac --release 17`）。

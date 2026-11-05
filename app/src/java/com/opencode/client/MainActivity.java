@@ -42,7 +42,7 @@ public class MainActivity extends Activity {
             "/sdcard/Download/opencode/server_password.txt";
     private static final String SERVER_PASSWORD = loadServerPassword();
     private static final String SERVE_CMD =
-            "OPENCODE_SERVER_PASSWORD=" + SERVER_PASSWORD
+            "termux-wake-lock; OPENCODE_SERVER_PASSWORD=" + SERVER_PASSWORD
                     + " opencode serve --hostname 127.0.0.1 --port 4097 --print-logs";
     private static final String INSTALL_ACTION = "com.opencode.client.INSTALL_RESULT";
 
@@ -205,6 +205,9 @@ public class MainActivity extends Activity {
     private final android.os.Handler doneHandler = new android.os.Handler(android.os.Looper.getMainLooper());
     private Runnable doneTask = null;
     private boolean listVisible = false;
+    // 0.22.10：列表加载失败自动重试（Termux 暂时被冻结时不用手动刷新/重启）
+    private int sessionsRetry = 0;
+    private Runnable sessionsRetryTask = null;
 
     /** SharedPreferences：await_<sid>=标题（在等结果），done_<sid>=1（刚完成待看）。 */
     private static android.content.SharedPreferences prefs(android.content.Context ctx) {
@@ -526,6 +529,10 @@ public class MainActivity extends Activity {
     protected void onPause() {
         listVisible = false;
         stopDoneWatch();
+        if (sessionsRetryTask != null) {
+            try { doneHandler.removeCallbacks(sessionsRetryTask); } catch (Exception ignored) { }
+            sessionsRetryTask = null;
+        }
         super.onPause();
     }
 
@@ -779,6 +786,7 @@ public class MainActivity extends Activity {
                     ni.add(sid);
                 }
                 runOnUiThread(() -> {
+                    sessionsRetry = 0;
                     titles.clear();
                     titles.addAll(nt);
                     ids.clear();
@@ -789,8 +797,21 @@ public class MainActivity extends Activity {
                 });
             } catch (Exception e) {
                 runOnUiThread(() -> {
-                    statusView.setText("加载失败：" + e.getMessage() + "，请确认服务器开着");
                     setBusy(false);
+                    // 0.22.10：服务器可能只是被系统暂时冻住，别让用户手动刷新/重启。
+                    if (listVisible && sessionsRetry < 4) {
+                        sessionsRetry++;
+                        statusView.setText("加载失败：" + e.getMessage()
+                                + "，3 秒后自动重试（" + sessionsRetry + "/4）…");
+                        if (sessionsRetryTask != null) doneHandler.removeCallbacks(sessionsRetryTask);
+                        sessionsRetryTask = () -> {
+                            sessionsRetryTask = null;
+                            if (listVisible) loadSessions();
+                        };
+                        doneHandler.postDelayed(sessionsRetryTask, 3000);
+                    } else {
+                        statusView.setText("加载失败：" + e.getMessage() + "，请确认服务器开着");
+                    }
                 });
             }
         }).start();

@@ -110,9 +110,24 @@ public class ChatActivity extends Activity {
     private volatile String sessionModelID = null;
     private volatile String sessionVariant = null;
     private volatile String sessionAgent = null;
-    private volatile boolean sessionMetaFetched = false;
-    private volatile boolean modelsLoaded = false;
-    private volatile boolean agentsLoaded = false;
+    private volatile boolean sessionMetaFetched = false; // 只代表「成功拿到」
+    private volatile boolean modelsLoaded = false;       // 只代表「成功拿到」
+    private volatile boolean agentsLoaded = false;       // 只代表「成功拿到」
+    // 0.22.10：一次失败就放弃 + 把 loaded 置 true，会让模型/Agent 永久空白，
+    // 只能重启 App。现改为失败不置位、后台自动重试，直到成功或页面销毁。
+    private volatile boolean modelsLoading = false;
+    private volatile boolean agentsLoading = false;
+    private volatile boolean metaLoading = false;
+    private volatile boolean historyLoading = false;
+    private volatile boolean historyLoaded = false;
+    private volatile boolean dataRetryPosted = false;
+    private volatile int dataRetryDelay = 5000;
+    private boolean historyFailToasted = false;
+    // 有请求失败、正在自动重试时置 true，状态栏明确显示，不再「断了不显示」。
+    private volatile boolean connTrouble = false;
+    // 当前 SSE 连接：onResume 发现长时间没心跳时主动 disconnect()，立即打断阻塞的
+    // readLine 触发重连（否则要等满 60 秒读超时）。
+    private volatile HttpURLConnection sseConn = null;
     private boolean metaApplied = false;
     private boolean suppressModelEvents = false;
     private String lastVariantModelKey = null;
@@ -651,6 +666,17 @@ public class ChatActivity extends Activity {
         if (lastSseLineAt > 0 && System.currentTimeMillis() - lastSseLineAt > 25000) {
             loadHistory();
             pollSessionStatus(false);
+            // 0.22.10：不等 60 秒读超时，直接把旧 SSE socket 掐掉，重连线程立刻工作。
+            HttpURLConnection stale = sseConn;
+            if (stale != null) {
+                try { stale.disconnect(); } catch (Exception ignored) { }
+                AppLog.log("resume: SSE 超过 25s 无心跳，已强制断开重连");
+            }
+        }
+        // 0.22.10：Termux 被系统冻结/降频后，进页那批请求会失败；回前台时
+        // 服务器可能已经恢复，自动补齐模型/Agent/会话状态/历史，不用重启 App。
+        if (!modelsLoaded || !agentsLoaded || !sessionMetaFetched || !historyLoaded) {
+            scheduleDataRetry();
         }
     }
 
@@ -994,6 +1020,15 @@ public class ChatActivity extends Activity {
         if (doneShowing) return; // ✅ window owns both views
         if (stoppedAwait) {
             String s = "⏹️ 已发送停止，等待服务器确认中断…";
+            statusBanner.setVisibility(LinearLayout.VISIBLE);
+            statusText.setText(s);
+            statusView.setText(s);
+            return;
+        }
+        if (connTrouble) {
+            // 0.22.10：服务器/网络暂时无响应时明确说出来（以前失败后界面照常「空闲」，
+            // 看起来像没断），自动重试成功后由 markServerOk() 清掉。
+            String s = "⚠️ 服务器暂时无响应，正在自动重试…";
             statusBanner.setVisibility(LinearLayout.VISIBLE);
             statusText.setText(s);
             statusView.setText(s);
@@ -1506,6 +1541,8 @@ public class ChatActivity extends Activity {
     }
 
     private void loadHistory() {
+        if (historyLoading) return;
+        historyLoading = true;
         runOnUiThread(() -> {
             if (!busy && !doneShowing) statusView.setText("加载记录…");
         });
@@ -1571,12 +1608,24 @@ public class ChatActivity extends Activity {
         clearToolLinger();
                     writingShown = false;
                     thinkingShown = false;
+                    historyLoaded = true;
+                    historyLoading = false;
+                    historyFailToasted = false;
+                    markServerOk();
                     if (!doneShowing) refreshStatus();
                 });
             } catch (Exception e) {
+                historyLoading = false;
+                AppLog.log("loadHistory 失败: " + e);
+                markServerFail();
+                scheduleDataRetry();
                 runOnUiThread(() -> {
-                    statusView.setText("记录加载失败：" + e.getMessage());
-                    Toast.makeText(this, "加载失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+                    statusView.setText("记录加载失败，自动重试中…");
+                    if (!historyFailToasted) {
+                        historyFailToasted = true;
+                        Toast.makeText(this, "记录加载失败：" + e.getMessage()
+                                + "（服务器暂时无响应，会自动重试）", Toast.LENGTH_LONG).show();
+                    }
                 });
             }
         }).start();
@@ -2382,6 +2431,8 @@ public class ChatActivity extends Activity {
     }
 
     private void loadModels() {
+        if (modelsLoading) return;
+        modelsLoading = true;
         new Thread(() -> {
             try {
                 URL url = new URL(BASE_URL + "/api/model");
@@ -2465,20 +2516,24 @@ public class ChatActivity extends Activity {
                     modelAdapter.notifyDataSetChanged();
                     suppressModelEvents = false;
                     modelsLoaded = true;
-                    applySessionMeta();
+                    modelsLoading = false;
+                    markServerOk();
+                    applySessionMeta(metaApplied);
                 });
-            } catch (Exception ignored) {
-                // model picker optional: sending without model uses session default
-                runOnUiThread(() -> {
-                    modelsLoaded = true;
-                    applySessionMeta();
-                });
+            } catch (Exception e) {
+                // 0.22.10：不再「失败也当加载完成」，否则模型下拉永久空白。
+                modelsLoading = false;
+                AppLog.log("loadModels 失败: " + e);
+                markServerFail();
+                scheduleDataRetry();
             }
         }).start();
     }
 
     /** Agent dropdown: GET /api/agent {data:[{id,name,mode}]}, primary only. Sends id. */
     private void loadAgents() {
+        if (agentsLoading) return;
+        agentsLoading = true;
         new Thread(() -> {
             try {
                 URL url = new URL(BASE_URL + "/api/agent");
@@ -2511,14 +2566,16 @@ public class ChatActivity extends Activity {
                     agentIDs.addAll(ids);
                     agentAdapter.notifyDataSetChanged();
                     agentsLoaded = true;
-                    applySessionMeta();
+                    agentsLoading = false;
+                    markServerOk();
+                    applySessionMeta(metaApplied);
                 });
-            } catch (Exception ignored) {
-                // agent picker optional: sending without agent uses session default
-                runOnUiThread(() -> {
-                    agentsLoaded = true;
-                    applySessionMeta();
-                });
+            } catch (Exception e) {
+                // 0.22.10：失败不置「已加载」，后台重试直到成功。
+                agentsLoading = false;
+                AppLog.log("loadAgents 失败: " + e);
+                markServerFail();
+                scheduleDataRetry();
             }
         }).start();
     }
@@ -2703,22 +2760,30 @@ public class ChatActivity extends Activity {
     }
 
     /**
-     * 下拉初始值 = 会话真实状态（0.20.0）：等 模型表/Agent表/会话元数据 都到齐后只应用一次。
+     * 下拉初始值 = 会话真实状态（0.20.0）：等 模型表/Agent表/会话元数据 都到齐后应用。
      * 会话模型或 Agent 未知时插入"（未设置）"占位（空 id = 发送时不切），
      * 不再用"默认（跟随会话）"；知道就选中真实那个。
+     * 0.22.10：force=true 用于服务器恢复后重新应用（先清掉旧占位，避免重复）。
      */
     private void applySessionMeta() {
-        if (metaApplied) return;
+        applySessionMeta(false);
+    }
+
+    private void applySessionMeta(boolean force) {
+        if (metaApplied && !force) return;
         if (!modelsLoaded || !agentsLoaded || !sessionMetaFetched) return;
         metaApplied = true;
+        if (force) removeMetaPlaceholders();
 
         // 模型：未知 → 占位；已知但不在可显示列表 → 插到最前显示真实身份。
         suppressModelEvents = true;
         if (sessionModelID == null || sessionModelID.isEmpty()) {
-            modelNames.add(0, "（未设置）");
-            modelProviderIDs.add(0, "");
-            modelIDs.add(0, "");
-            modelAdapter.notifyDataSetChanged();
+            if (modelNames.isEmpty() || !"（未设置）".equals(modelNames.get(0))) {
+                modelNames.add(0, "（未设置）");
+                modelProviderIDs.add(0, "");
+                modelIDs.add(0, "");
+                modelAdapter.notifyDataSetChanged();
+            }
             modelSpinner.setSelection(0);
         } else {
             String pid = sessionProviderID == null ? "" : sessionProviderID;
@@ -2739,8 +2804,10 @@ public class ChatActivity extends Activity {
         // Agent：未知 → 占位；已知 → 选中。
         int a;
         if (sessionAgent == null || sessionAgent.isEmpty()) {
-            agentNames.add(0, "（未设置）");
-            agentIDs.add(0, "");
+            if (agentNames.isEmpty() || !"（未设置）".equals(agentNames.get(0))) {
+                agentNames.add(0, "（未设置）");
+                agentIDs.add(0, "");
+            }
             a = 0;
         } else {
             a = agentIDs.indexOf(sessionAgent);
@@ -2754,8 +2821,25 @@ public class ChatActivity extends Activity {
         agentSpinner.setSelection(a);
     }
 
+    /** 0.22.10：重新应用会话真实状态前，先拿掉上一轮失败时加的占位项。 */
+    private void removeMetaPlaceholders() {
+        if (!modelNames.isEmpty() && "（未设置）".equals(modelNames.get(0))) {
+            modelNames.remove(0);
+            modelProviderIDs.remove(0);
+            modelIDs.remove(0);
+            modelAdapter.notifyDataSetChanged();
+        }
+        if (!agentNames.isEmpty() && "（未设置）".equals(agentNames.get(0))) {
+            agentNames.remove(0);
+            agentIDs.remove(0);
+            agentAdapter.notifyDataSetChanged();
+        }
+    }
+
     /** 进页读会话真实状态：agent + model{providerID,id,variant}（0.20.0）。 */
     private void loadSessionMeta() {
+        if (metaLoading) return;
+        metaLoading = true;
         new Thread(() -> {
             try {
                 URL url = new URL(BASE_URL + "/api/session/" + sessionID);
@@ -2764,25 +2848,66 @@ public class ChatActivity extends Activity {
                 c.setConnectTimeout(5000);
                 c.setReadTimeout(8000);
                 c.setRequestMethod("GET");
-                if (c.getResponseCode() == 200) {
-                    JSONObject s = new JSONObject(readAll(c.getInputStream())).optJSONObject("data");
-                    if (s != null) {
-                        sessionAgent = s.optString("agent", null);
-                        JSONObject m = s.optJSONObject("model");
-                        if (m != null) {
-                            sessionProviderID = m.optString("providerID", null);
-                            sessionModelID = m.optString("id", null);
-                            sessionVariant = m.optString("variant", null);
-                        }
-                    }
+                int code = c.getResponseCode();
+                if (code != 200) throw new Exception("HTTP " + code);
+                JSONObject s = new JSONObject(readAll(c.getInputStream())).optJSONObject("data");
+                if (s == null) throw new Exception("无 data");
+                sessionAgent = s.optString("agent", null);
+                JSONObject m = s.optJSONObject("model");
+                if (m != null) {
+                    sessionProviderID = m.optString("providerID", null);
+                    sessionModelID = m.optString("id", null);
+                    sessionVariant = m.optString("variant", null);
                 }
-            } catch (Exception ignored) {
-                // 会话状态可选：读不到就按"未设置"显示
-            } finally {
                 sessionMetaFetched = true;
+                metaLoading = false;
+                markServerOk();
+                runOnUiThread(() -> applySessionMeta(metaApplied));
+            } catch (Exception e) {
+                // 0.22.10：读不到不再当成「已完成」，否则下拉永远停在空白/占位。
+                metaLoading = false;
+                AppLog.log("loadSessionMeta 失败: " + e);
+                markServerFail();
+                scheduleDataRetry();
             }
-            runOnUiThread(this::applySessionMeta);
         }).start();
+    }
+
+    /** 0.22.10：服务器暂时无响应时统一提示 + 5s 起指数退避重试，直到成功或页面销毁。
+     *  覆盖模型/Agent/会话状态/历史四条进页请求——Termux 被系统冻结再恢复后无需重启 App。 */
+    private void scheduleDataRetry() {
+        if (dataRetryPosted) return;
+        dataRetryPosted = true;
+        final int delay = dataRetryDelay;
+        dataRetryDelay = Math.min(30000, dataRetryDelay * 2);
+        uiHandler.postDelayed(() -> {
+            dataRetryPosted = false;
+            if (isFinishing() || isDestroyed()) return;
+            if (!modelsLoaded) loadModels();
+            if (!agentsLoaded) loadAgents();
+            if (!sessionMetaFetched) loadSessionMeta();
+            if (!historyLoaded) loadHistory();
+            if (!modelsLoaded || !agentsLoaded || !sessionMetaFetched || !historyLoaded) {
+                scheduleDataRetry();
+            }
+        }, delay);
+    }
+
+    private void markServerFail() {
+        runOnUiThread(() -> {
+            connTrouble = true;
+            refreshStatus();
+        });
+    }
+
+    private void markServerOk() {
+        runOnUiThread(() -> {
+            dataRetryDelay = 5000;
+            if (connTrouble) {
+                connTrouble = false;
+                refreshStatus();
+            }
+        });
     }
 
     // ---------- copy & permission ----------
@@ -3305,6 +3430,7 @@ public class ChatActivity extends Activity {
                 try {
                     URL url = new URL(BASE_URL + "/api/event");
                     c = (HttpURLConnection) url.openConnection();
+                    sseConn = c;
                     MainActivity.auth(c);
                     // SSE 是长连接，不能跟短请求一样 Connection: close；
                     // auth() 默认写 close，这里显式改回 keep-alive。
@@ -3320,9 +3446,14 @@ public class ChatActivity extends Activity {
                     boolean wasDown = sseWasDown;
                     sseOk = true;
                     sseWasDown = false;
-                    runOnUiThread(() -> refreshStatus());
+                    markServerOk();
                     if (wasDown) {
+                        AppLog.log("SSE 重连成功");
                         pollSessionStatus(true); // 断线补漏：活动会话重拉一遍
+                    }
+                    runOnUiThread(() -> refreshStatus());
+                    if (!modelsLoaded || !agentsLoaded || !sessionMetaFetched || !historyLoaded) {
+                        scheduleDataRetry(); // 断线期间失败的进页请求：重连后补
                     }
                     BufferedReader r = new BufferedReader(
                             new InputStreamReader(c.getInputStream(), StandardCharsets.UTF_8));
@@ -3338,7 +3469,16 @@ public class ChatActivity extends Activity {
                 } catch (Exception e) {
                     // reconnect after pause; flag stale so banner admits it may be outdated
                     sseOk = false;
+                    if (!sseWasDown) AppLog.log("SSE 断开: " + e);
                     sseWasDown = true;
+                    // 0.22.10：断开超过 10 秒仍没恢复，就明确显示「服务器无响应」，
+                    // 不再出现「实际断了但界面照常空闲」。重连成功会自动清掉。
+                    uiHandler.postDelayed(() -> {
+                        if (sseRunning && !sseOk) {
+                            connTrouble = true;
+                            refreshStatus();
+                        }
+                    }, 10000);
                     runOnUiThread(() -> {
                         refreshStatus();
                         if (!busy && !doneShowing && currentToolText() == null && retryText == null)
@@ -3350,6 +3490,7 @@ public class ChatActivity extends Activity {
                         break;
                     }
                 } finally {
+                    if (sseConn == c) sseConn = null;
                     if (c != null) c.disconnect();
                 }
             }
