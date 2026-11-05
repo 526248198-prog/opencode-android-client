@@ -73,6 +73,14 @@ public class MainActivity extends Activity {
         String b64 = android.util.Base64.encodeToString(
                 cred.getBytes(StandardCharsets.UTF_8), android.util.Base64.NO_WRAP);
         c.setRequestProperty("Authorization", "Basic " + b64);
+        // 0.22.9：所有短请求都禁用 keep-alive 复用。
+        // 根因（实测 OpenCode 2.1.4）：服务端约 6 秒空闲就静默关闭 keep-alive 连接
+        // （原始 socket 探针：FIN @6.03s），但 Android 的 HttpURLConnection 连接池
+        // 仍会把这条死连接拿给下一个请求，一直等到 8 秒读超时才失败；而
+        // SocketTimeoutException 在「请求已发出」后不会被自动重试。于是只要两次
+        // 操作间隔超过几秒，下一次请求就必"连不上"，重启 App 清空连接池才恢复。
+        // 本机回环重新建连几乎零成本，直接让服务端回完就关，彻底绕开死连接复用。
+        c.setRequestProperty("Connection", "close");
     }
 
     private static String apkPath() {

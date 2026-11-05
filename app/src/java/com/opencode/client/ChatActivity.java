@@ -3306,6 +3306,9 @@ public class ChatActivity extends Activity {
                     URL url = new URL(BASE_URL + "/api/event");
                     c = (HttpURLConnection) url.openConnection();
                     MainActivity.auth(c);
+                    // SSE 是长连接，不能跟短请求一样 Connection: close；
+                    // auth() 默认写 close，这里显式改回 keep-alive。
+                    c.setRequestProperty("Connection", "keep-alive");
                     c.setConnectTimeout(8000);
                     // 0.21.15：别再用无限读超时。服务端每 15 秒发一条 ": heartbeat"，
                     // 死连接（切网/休眠/被运营商掐）以前会永远卡在 readLine 上，

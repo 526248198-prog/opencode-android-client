@@ -10,7 +10,7 @@
 
 - **解决的痛点**：Termux 里敲命令、看刷屏输出，在手机上极易误触。App 只做“大按钮 + 会话列表 + 聊天”，防误触优先。
 - **不做的事**：不复刻 OpenCode Web UI；不自己实现 Agent / 模型调用 / 工具系统；不加项目管理、世界书、角色卡等多余功能。
-- **运行环境**：OpenCode Server（v2.0.12）跑在同一台手机的 Termux 里，App 通过 `http://127.0.0.1:4097` 直连。Server 有鉴权（`OPENCODE_SERVER_PASSWORD`，本机回环使用，App 用 HTTP Basic `opencode:<你的密码>`；V1 老服务仍在 `4096` 跑 `1.18.29` 进程，未动）。V1（`opencode1 1.18.32`）与 V2（`opencode 2.0.12`）双装共存，App 只连 V2。
+- **运行环境**：OpenCode Server（2026-11 实测 `2.1.4`；文档主体按 `2.0.12` 核实）跑在同一台手机的 Termux 里，App 通过 `http://127.0.0.1:4097` 直连。Server 有鉴权（`OPENCODE_SERVER_PASSWORD`，本机回环使用，App 用 HTTP Basic `opencode:<你的密码>`；V1 老服务仍在 `4096` 跑 `1.18.29` 进程，未动）。V1（`opencode1 1.18.32`）与 V2（`opencode 2.x`）双装共存，App 只连 V2。
 - **密码不写进源码**（0.21.6 起，本仓库公开）：App 启动时读 `/sdcard/Download/opencode/server_password.txt` 的**第一行**当密码；文件不存在/为空/读不到就用占位符 `YOUR_SERVER_PASSWORD`（连不上会 401）。所以首次使用要自己建这个文件：
 
   ```bash
@@ -25,7 +25,7 @@
 | 项 | 值 | 说明 |
 |---|---|---|
 | Termux | **F-Droid 版**（版本号不重要） | Play 商店版已废弃、装不了新包；这里只用来跑 `opencode serve` |
-| OpenCode | **2.0.12（V2 API）** | **最关键**。V1/V2 的接口、SSE、鉴权、消息结构完全不同，按 V1 抄必崩（本文档里 V1 记录均已标「存档/已退役」） |
+| OpenCode | **2.1.4（V2 API）**（此前 2.0.12 已验证） | **最关键**。V1/V2 的接口、SSE、鉴权、消息结构完全不同，按 V1 抄必崩（本文档里 V1 记录均已标「存档/已退役」）。2.1.x 起 keep-alive 空闲约 6 秒即关，客户端必须 `Connection: close`，见 §3.1 |
 | Android SDK | `build-tools 34.0.4` + `platforms android-35`（编译）/ `android-33`（链接） | `35.0.1` 的 `aapt2` 在本机报 `Exec format error`，只能用 `34.0.4` |
 | JDK | 21（`javac --release 17`） | 见第 5 节 |
 | 手机 | Android 8.0+（minSdk 26，targetSdk 35） | WebView 需为系统/Chrome 提供方 |
@@ -57,6 +57,8 @@
 ### 3.1 MainActivity.java（会话列表页）
 
 - `BASE_URL = http://127.0.0.1:4097`，`SERVE_CMD = OPENCODE_SERVER_PASSWORD=<密码> opencode serve --hostname 127.0.0.1 --port 4097 --print-logs`。密码来自 `loadServerPassword()`：读 `/sdcard/Download/opencode/server_password.txt` 首行，读不到回落占位符 `YOUR_SERVER_PASSWORD`（0.21.6 起，公开仓库不带真实密码）。所有请求带 `MainActivity.auth()`（HTTP Basic `opencode:<密码>`，`android.util.Base64`，零第三方）。
+- **短请求禁用 keep-alive（0.22.9）**：`auth()` 里统一给每条短请求加 `Connection: close`。根因（OpenCode 2.1.4 实测）：服务端空闲约 **6 秒**就静默关闭 keep-alive 连接（原始 socket 探针 FIN @6.03s），但 Android `HttpURLConnection` 连接池仍会把死连接交给下一个请求，一直卡到 8 秒读超时才失败，而 `SocketTimeoutException` 在请求已发出后不会被自动重试——于是「隔一会儿再操作就连不上，重启 App 清空连接池才恢复」。回环重建连接几乎无成本，直接让服务端回完就关。唯一例外是聊天页 SSE：`ChatActivity.startSse()` 在 `auth()` 之后显式改回 `Connection: keep-alive`，否则长连接会被关。排查脚本：Termux 里 `curl -v` 或 raw socket 发两次 `GET /api/info`，中间 `sleep 8`，第二次若读到 EOF 即为此问题。
+
 - 启动即 `GET /api/session` 拉列表（`{data:[Session.Info]}` 解包，默认 50 条），行显示同前；`model` 字段 V2 为 `{providerID,modelID}`（无 `id` 时拼 `provider/model`）。
 - `＋ 新建会话`：`POST /api/session` 空 body `{}`（回 `{data}`，只验状态码）。
 - 条目**长按**：`PATCH /api/session/:id {"title"}` / `DELETE /api/session/:id`，V2 成功码为 `200/204`（V1 只有 200）。
@@ -270,6 +272,8 @@ SSE 事件 `type`（`data` 内含 `sessionID`）：`server.connected` / `session
 → 74=0.22.6 前台 Service 兜底「跑完叫你」（旧机制只靠列表页 15 秒轮询 + 收尾通知，App 被系统杀死/冻结后没人监听，跑完用户不知道。新增顶层类 `WatchService.java`：前台 Service（`foregroundServiceType="dataSync"`，Android 14+ 强制，清单加 `FOREGROUND_SERVICE` + `FOREGROUND_SERVICE_DATA_SYNC` 两权限），15 秒轮询 `GET /api/session/active`，`await_<sid>` 消失 → 复用 `MainActivity.markJustDone()+notifyDone()` 通知 → 清 await → 空闲自停（startForeground 参数作用域见 startForegroundCompat，前台通知走 IMPORTANCE_LOW 渠道 "watch"）。**只在 App 前台时机启动**：`MainActivity.markAwaiting()` 内接 `WatchService.ensureStarted()`（发消息/记等待必经）+ 列表页 `onResume` 补一次（易漏 0.21.15 类后台拒绝场景直接 try-catch 退回旧行为）；**后台绝不 startForegroundService**（Android 14+ 抛 ForegroundServiceStartNotAllowedException）。双通知防重：MainActivity 加 static `CLAIMED` 同步集合 + `claimDone(sid)`，`checkDoneOnce()` 与 Service 谁先 claim 谁出通知；进程死后集合丢失但 `await_` 已被清，`awaitingMap` 空判断兜底不会二次通知。`BASE_URL` 从 private 放宽为包级 static 供 Service 复用，`auth()` 本已包级直用。为 D8 约束：Service 为顶层类无匿名内部类（doc §3.1）；实测 Android 16 真机（versionCode 74）。
 → 75=0.22.7 WatchService 排障日志（真机反馈划掉 App 后跑完收不到通知；`WatchService.log()` 往 `/sdcard/Download/opencode/watch.log` 追加时间戳事件：ensure 起没起 / startForeground 成败 / 每轮轮询结果 / 通知 / onDestroy，便于对账断在哪一环；`versionCode 75`）。
 → 76=0.22.8 开放 openrouter 模型 + 模型搜索（0.22.7 之后模型仍只显示 opencode 免费，免费额度不够没法切。① `loadModels()` 改为「opencode 只留免费、其他 provider 全显示」，排序 opencode→其他、各 provider 内免费优先、再按 `modelID`，标签加 🆓/💳；② 模型行右侧加 🔍 搜索按钮，`AlertDialog` 输入框 + `ListView` 即时过滤（匹配模型名/提供方），点选同步 Spinner，发送与思考档位逻辑复用原下拉；`ModelSearchWatcher`/`ModelPickListener` 均 static 具名类守 D8；③ 清理上一轮误加的聊天页底栏「📦 安装更新」按钮（它挤压输入框、破坏原 UI；安装入口仍只在列表页）与 `installUpdate` 的 static 化回退；`versionCode 76`）。
+→ 77=0.22.9 修「隔一会儿就连不上，必须重启 App」（用户反馈 OpenCode 升级后常见）。真机 + raw socket 实测：OpenCode 2.1.4 服务端空闲约 **6 秒**就静默 FIN 掉 keep-alive 连接，而 Android `HttpURLConnection` 连接池仍复用这条死连接，请求要卡满 8 秒读超时才报错；`SocketTimeoutException` 在请求已发出后不会自动重试，于是低频操作（列表刷新、15 秒轮询、发消息）几乎每次都失败，重启 App 清空连接池只是暂时恢复。修法：`MainActivity.auth()` 统一给所有短请求加 `Connection: close`（服务端回包也带 `Connection: close`，客户端不再入池），唯一例外是聊天页 SSE，`startSse()` 里 `auth()` 之后显式改回 `Connection: keep-alive` 保住长连接；`versionCode 77`）。
+
 → 62=0.21.14 正文链接可点（`applyRichText` 出口统一走 `setLinkifiedText`：Linkify WEB_URLS + 自定义 `UrlClickSpan` 打开 App 内浏览器，失败退回系统；`LinkMovementMethod` + 蓝字下划线；长按复制与点击同时触发的老问题用 `lastLongPressAt` 900ms 抑制；`BrowserActivity.onNewIntent` 支持常驻页二次导航；`versionCode 66`）。
 - **环境**：`~/android-sdk`（platforms `android-33/35`、build-tools `34.0.4`）、`gradle` 仅备用（本项目不用）、JDK 21（`javac --release 17`）。
 
